@@ -3,7 +3,7 @@
 A cycle-accurate NES emulator, as a library. No shell, no window, no audio
 device of its own: hand it a cartridge, run a frame, take the pixels and the
 samples. The Android front end that drives it lives in
-[octet-android](../octet-android).
+[octet-android](https://github.com/sky9t-sulia/octet-android).
 
 ## Using it
 
