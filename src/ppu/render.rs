@@ -1,0 +1,110 @@
+//! Compositing the background and sprite pixel that land on one dot into one.
+
+use super::*;
+
+impl Ppu {
+    /// Colour index of the background at the current dot, and whether it is
+    /// opaque (a pattern value of zero is transparent regardless of palette).
+    fn background_pixel(&self) -> (u8, bool) {
+        if self.mask & 0x08 == 0 {
+            return (0, false);
+        }
+        // Fine X selects which of the sixteen shifted bits is on screen.
+        let bit = 15 - self.x as u16;
+        let lo = ((self.bg_shift_lo >> bit) & 1) as u8;
+        let hi = ((self.bg_shift_hi >> bit) & 1) as u8;
+        let pattern = (hi << 1) | lo;
+        if pattern == 0 {
+            return (0, false);
+        }
+        let pal_lo = ((self.at_shift_lo >> bit) & 1) as u8;
+        let pal_hi = ((self.at_shift_hi >> bit) & 1) as u8;
+        let palette = (pal_hi << 1) | pal_lo;
+        (palette * 4 + pattern, true)
+    }
+
+    /// Colour index of the frontmost opaque sprite covering this dot, whether
+    /// it draws behind the background, and whether it is sprite zero.
+    fn sprite_pixel(&self, x: u16) -> (u8, bool, bool) {
+        if self.mask & 0x10 == 0 {
+            return (0, false, false);
+        }
+        for i in 0..self.sprite_count {
+            let sx = self.sprite_x[i] as u16;
+            if x < sx || x >= sx + 8 {
+                continue;
+            }
+            let bit = 7 - (x - sx);
+            let lo = (self.sprite_lo[i] >> bit) & 1;
+            let hi = (self.sprite_hi[i] >> bit) & 1;
+            let pattern = (hi << 1) | lo;
+            if pattern == 0 {
+                continue; // transparent: a lower-priority sprite may show
+            }
+            let attr = self.sprite_attr[i];
+            let palette = 4 + (attr & 3);
+            let behind = attr & 0x20 != 0;
+            return (palette * 4 + pattern, behind, i == 0 && self.sprite_zero_loaded);
+        }
+        (0, false, false)
+    }
+
+    #[rustfmt::skip]
+    pub(super) fn render_pixel(&mut self) {
+        let x = self.dot - 1;
+        let y = self.scanline as u16;
+
+        // The leftmost eight pixels can be clipped independently per layer.
+        let clip_bg = x < 8 && self.mask & 0x02 == 0;
+        let clip_sp = x < 8 && self.mask & 0x04 == 0;
+
+        let (bg_index, bg_opaque) = if clip_bg { (0, false) } else { self.background_pixel() };
+        let (sp_index, sp_behind, is_zero) =
+            if clip_sp { (0, false, false) } else { self.sprite_pixel(x) };
+        let sp_opaque = sp_index != 0;
+
+        // Sprite zero hit needs both layers opaque, and never fires on the
+        // last dot of the line.
+        if is_zero && bg_opaque && sp_opaque && x != 255 && self.rendering() {
+            self.status |= 0x40;
+        }
+
+        let index = match (bg_opaque, sp_opaque) {
+            (false, false) => 0, // backdrop
+            (false, true) => sp_index,
+            (true, false) => bg_index,
+            (true, true) => {
+                if sp_behind { bg_index } else { sp_index }
+            }
+        };
+
+        let color = self.read_palette(0x3f00 + index as u16) as usize;
+        let mut rgb = PALETTE[color & 0x3f];
+        // The emphasis bits attenuate the two channels they do not boost.
+        if self.mask & 0xe0 != 0 {
+            rgb = emphasize(rgb, self.mask >> 5);
+        }
+        self.framebuffer[y as usize * FRAME_WIDTH + x as usize] = rgb;
+    }
+}
+
+/// Apply the `$2001` colour emphasis bits: each set bit attenuates the other
+/// two channels by roughly 20%.
+fn emphasize(rgb: u32, bits: u8) -> u32 {
+    let (r, g, b) = ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+    let att = |c: u32| c * 4 / 5;
+    let (mut r, mut g, mut b) = (r, g, b);
+    if bits & 1 != 0 {
+        g = att(g);
+        b = att(b);
+    }
+    if bits & 2 != 0 {
+        r = att(r);
+        b = att(b);
+    }
+    if bits & 4 != 0 {
+        r = att(r);
+        g = att(g);
+    }
+    (r << 16) | (g << 8) | b
+}
