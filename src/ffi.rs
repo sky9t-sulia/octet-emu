@@ -121,8 +121,8 @@ impl Emu {
     }
 
     /// The finished picture, one `u32` per pixel as `0x00RRGGBB`.
-    pub fn pixels(&self) -> &[u32] {
-        self.nes.framebuffer()
+    pub fn write_rgba(&self, out: &mut [u8]) -> Option<usize> {
+        self.nes.write_rgba(out)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -247,11 +247,13 @@ pub unsafe extern "C" fn octet_emu_run_frame(emu: *mut Emu) {
 /// # Safety
 /// `emu` must be null or a live handle.
 #[no_mangle]
-pub unsafe extern "C" fn octet_emu_pixels(emu: *const Emu) -> *const u32 {
-    match unsafe { emu.as_ref() } {
-        Some(emu) => emu.pixels().as_ptr(),
-        None => core::ptr::null(),
+pub unsafe extern "C" fn octet_emu_pixels(emu: *const Emu, out: *mut u8, cap: usize) -> usize {
+    let Some(emu) = (unsafe { emu.as_ref() }) else { return 0 };
+    if out.is_null() {
+        return 0;
     }
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, cap) };
+    emu.write_rgba(dst).unwrap_or(0)
 }
 
 #[no_mangle]
@@ -375,6 +377,7 @@ pub unsafe extern "C" fn octet_emu_state_write(emu: *mut Emu, data: *const u8, l
 // plain C ones above, translating Java types at the boundary rather than
 // duplicating any emulator logic.
 
+#[cfg(target_os = "android")]
 mod jni_bridge {
     use super::{Emu, Region};
     use jni::objects::{JByteBuffer, JClass};
@@ -464,19 +467,10 @@ mod jni_bridge {
         let Some(emu) = handle_ref(handle) else { return };
         let Ok(ptr) = env.get_direct_buffer_address(&out) else { return };
         let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return };
-        let pixels = emu.pixels();
-        let needed = pixels.len() * 4;
-        if cap < needed {
-            return;
-        }
-        let dst = unsafe { core::slice::from_raw_parts_mut(ptr, needed) };
-        for (i, &px) in pixels.iter().enumerate() {
-            let at = i * 4;
-            dst[at] = (px >> 16) as u8; // R
-            dst[at + 1] = (px >> 8) as u8; // G
-            dst[at + 2] = px as u8; // B
-            dst[at + 3] = 0xff; // A, always opaque
-        }
+        let dst = unsafe { core::slice::from_raw_parts_mut(ptr, cap) };
+        // Expanded straight into the buffer Java handed over: no intermediate
+        // picture, and the same loop that was here before.
+        emu.write_rgba(dst);
     }
 
     #[no_mangle]

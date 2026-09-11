@@ -160,8 +160,8 @@ impl Cpu {
                 self.set_zn(r);
             }
 
-            // ---- Unstable stores: the value is ANDed with the address high
-            // byte plus one, and a page crossing corrupts the address itself.
+            // ---- Unstable stores. See `unstable_store_at` for what makes
+            // them unstable, and for the one case where they are not.
             0x9c => { let v = self.y; self.unstable_store(bus, v, self.x); }
             0x9e => { let v = self.x; self.unstable_store(bus, v, self.y); }
             0x9f => { let v = self.a & self.x; self.unstable_store(bus, v, self.y); }
@@ -266,12 +266,31 @@ impl Cpu {
         self.unstable_store_at(bus, base, idx, val);
     }
 
+    /// The indexed write the four unstable stores share.
+    ///
+    /// Two things happen here that no well-behaved store does. The value is
+    /// ANDed with the high byte of the base address plus one, and when the
+    /// index carries into that high byte, the address the write lands on has
+    /// its own high byte replaced by that same value.
+    ///
+    /// Both come from one cause: these opcodes leave a register driving the
+    /// address-high lines while the adder is still carrying into them, so the
+    /// two collide on the bus. That collision needs the cycle before the write
+    /// to be the processor's own. When the DMA unit takes that cycle instead,
+    /// the lines have settled by the time the write goes out and neither
+    /// happens — the instruction stores the value it was given, at the address
+    /// it computed. A store with no surprises left in it.
     fn unstable_store_at(&mut self, bus: &mut impl CpuBus, base: u16, idx: u8, val: u8) {
         let addr = base.wrapping_add(idx as u16);
+        // The dummy read, carried out with the high byte not yet fixed up.
+        // This is the cycle a DMA is able to steal.
         self.read(bus, (base & 0xff00) | (addr & 0x00ff));
+        if self.held_off {
+            self.write(bus, addr, val);
+            return;
+        }
+
         let val = val & ((base >> 8) as u8).wrapping_add(1);
-        // When the index carries, the high byte of the address is replaced by
-        // the value being written.
         let addr = if (base & 0xff00) != (addr & 0xff00) {
             ((val as u16) << 8) | (addr & 0x00ff)
         } else {

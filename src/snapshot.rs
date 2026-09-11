@@ -50,7 +50,9 @@ pub(crate) mod bytes {
 
 /// The picture is not state: it is what the last frame drew, and the next
 /// frame draws it again. Left out of the file, and blank until then.
-pub(crate) fn blank_frame() -> alloc::boxed::Box<[u32; crate::FRAME_WIDTH * crate::FRAME_HEIGHT]> {
+/// A blank picture for a save state to land on; the real one is redrawn
+/// by the next frame.
+pub(crate) fn blank_ids() -> alloc::boxed::Box<[u16; crate::FRAME_WIDTH * crate::FRAME_HEIGHT]> {
     alloc::boxed::Box::new([0; crate::FRAME_WIDTH * crate::FRAME_HEIGHT])
 }
 

@@ -69,22 +69,39 @@ impl Cpu {
 
     // ---- Operations -----------------------------------------------------
 
+    /// A conditional branch.
+    ///
+    /// Not taken, it is two cycles and decides about interrupts where every
+    /// other instruction does. Taken, it decides *before* it moves the
+    /// program counter and then never looks again — so an interrupt arriving
+    /// during the cycles that follow waits for the next instruction, which is
+    /// what AccuracyCoin's page 12 means by a branch not polling before its
+    /// third cycle.
+    ///
+    /// That answer is held in a local rather than left sitting in the poll's
+    /// shift register. Anything that adds cycles here polls as well — a DMA
+    /// stealing the third cycle keeps sampling the lines while it holds the
+    /// processor off the bus — and would otherwise push the branch's own
+    /// answer out and take an interrupt this instruction had already declined.
+    /// The lines still get sampled; it is only this instruction's verdict that
+    /// is fixed.
     pub(super) fn branch(&mut self, bus: &mut impl CpuBus, take: bool) {
         let offset = self.fetch(bus) as i8 as u16;
         if !take {
             return;
         }
-        // A taken branch within a page ignores its last cycle's poll. Both
-        // the second and fourth cycles poll, and either one counts.
-        self.run_irq = self.prev_run_irq;
+        let mut decided = self.prev_run_irq;
 
         self.read(bus, self.pc);
         let target = self.pc.wrapping_add(offset);
         if (target & 0xff00) != (self.pc & 0xff00) {
-            self.run_irq |= self.prev_run_irq;
+            // Crossing a page costs another cycle, and that one does poll:
+            // either answer is enough to take the interrupt.
+            decided |= self.run_irq;
             self.read(bus, (self.pc & 0xff00) | (target & 0x00ff));
         }
         self.pc = target;
+        self.prev_run_irq = decided;
     }
 
     pub(super) fn compare(&mut self, lhs: u8, rhs: u8) {

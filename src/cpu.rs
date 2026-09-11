@@ -69,6 +69,18 @@ pub struct Cpu {
 
     /// Total CPU cycles since power-on, for tracing and test harnesses.
     pub cycles: u64,
+
+    /// Whether the DMA unit held the processor off the bus during the most
+    /// recent read.
+    ///
+    /// The `RDY` line is invisible to a program everywhere but one place: the
+    /// unstable stores lose their address-high-byte term when the cycle before
+    /// their write is stolen. See `Cpu::unstable_store_at`.
+    ///
+    /// Only meaningful within the instruction that set it, so a snapshot has
+    /// no reason to carry it.
+    #[cfg_attr(feature = "snapshot", serde(skip))]
+    held_off: bool,
 }
 
 impl Default for Cpu {
@@ -94,6 +106,7 @@ impl Cpu {
             run_irq: false,
             prev_run_irq: false,
             cycles: 0,
+            held_off: false,
         }
     }
 
@@ -121,10 +134,12 @@ impl Cpu {
     fn read(&mut self, bus: &mut impl CpuBus, addr: u16) -> u8 {
         // A DMA can only halt a read; a write already drives the bus. The CPU
         // keeps polling while halted, so step a cycle at a time.
+        self.held_off = false;
         while bus.dma_pending() {
             bus.dma_step(addr);
             self.cycles += 1;
             self.poll(bus);
+            self.held_off = true;
         }
         let val = bus.read(addr);
         self.cycles += 1;

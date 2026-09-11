@@ -10,6 +10,10 @@ use alloc::boxed::Box;
 use crate::cartridge::{Mirroring, TvSystem};
 use crate::mapper::Mapper;
 
+/// How many distinct colours a PPU can emit: sixty-four palette entries,
+/// each under one of eight emphasis settings.
+pub const COLOR_IDS: usize = 512;
+
 pub const FRAME_WIDTH: usize = 256;
 pub const FRAME_HEIGHT: usize = 240;
 
@@ -32,6 +36,37 @@ pub const PALETTE: [u32; 64] = [
     0xf8d878, 0xd8f878, 0xb8f8b8, 0xb8f8d8, 0x00fcfc, 0xf8d8f8, 0x000000, 0x000000,
 ];
 
+/// The RGB a colour identity stands for — the inverse of what the PPU wrote
+/// into [`Ppu::color_ids`].
+///
+/// A front end that carries identities rather than pixels expands them with
+/// this, or with the table [`palette_table`] builds from it. Bits 0-5 are the
+/// palette entry, bits 6-8 the `$2001` emphasis.
+pub fn expand(id: u16) -> u32 {
+    let color = PALETTE[(id & 0x3f) as usize];
+    let emphasis = ((id >> 6) & 7) as u8;
+    if emphasis == 0 {
+        color
+    } else {
+        render::emphasize(color, emphasis)
+    }
+}
+
+/// Every colour a PPU can emit, indexed by identity.
+///
+/// Handed to a front end once so it can expand a frame itself — on a GPU, in
+/// a shader — instead of being sent pixels. Keeping the table's construction
+/// here is what stops the two ends disagreeing about a colour.
+pub fn palette_table() -> [u32; COLOR_IDS] {
+    let mut out = [0; COLOR_IDS];
+    let mut id = 0;
+    while id < COLOR_IDS {
+        out[id] = expand(id as u16);
+        id += 1;
+    }
+    out
+}
+
 #[derive(Clone)]
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 pub struct Ppu {
@@ -40,6 +75,31 @@ pub struct Ppu {
     mask: u8,
     status: u8,
     oam_addr: u8,
+    /// Where the sprite unit is in secondary OAM.
+    ///
+    /// Evaluation fills it and the sprite fetch walks back over it, one byte
+    /// every two dots, so a full fetch of thirty-two bytes brings this back to
+    /// zero by dot 321 — which is why a `$2004` read taken after that normally
+    /// sees index zero. Turn rendering off for part of the fetch and the
+    /// stepping stops with it, leaving the address somewhere else.
+    oam2_addr: u8,
+
+    /// Whether the secondary OAM address has run off the end of it.
+    ///
+    /// This is the eight-sprite limit. Nothing counts sprites: the address
+    /// advances once per byte copied, and when it wraps past the last of the
+    /// thirty-two it latches here, which both stops any further copying and
+    /// freezes the address where it stands. AccuracyCoin's page 22 can see
+    /// the difference, because a `$2004` read late on a scanline reads
+    /// through that same address.
+    oam2_full: bool,
+    /// The OAM address sprite evaluation began from.
+    ///
+    /// Evaluation walks OAM from wherever the address happens to point when it
+    /// starts, which need not be zero and need not even be a multiple of four
+    /// — a program can leave it anywhere. Held for the length of the scanline
+    /// because the address register itself is cleared during sprite fetching.
+    eval_start: u8,
 
     /// Loopy's registers: `v` live address, `t` latch, `x` fine scroll,
     /// `w` the shared first/second-write toggle.
@@ -83,14 +143,23 @@ pub struct Ppu {
     at_shift_hi: u16,
 
     // ---- Sprite pipeline ----
-    sprite_count: usize,
     /// Sprite evaluation progress: OAM sprite index, byte index within it,
     /// and how many have been copied to secondary OAM so far.
     eval_n: usize,
     eval_m: usize,
-    eval_found: usize,
     eval_done: bool,
-    sprite_x: [u8; 8],
+    /// Each drawn sprite's shifter counter, loaded with its X position as the
+    /// fetch reads it. It counts down a dot at a time, and the sprite is drawn
+    /// once it has run out — so a sprite has no position of its own, only a
+    /// distance still to go.
+    sprite_counter: [u8; 8],
+    /// Whether each counter is counting rather than halted. A halted sprite is
+    /// one being drawn; the end of a line sets them all counting again, but
+    /// only if rendering is on to do it.
+    sprite_counting: [bool; 8],
+    /// The three bytes of a sprite the fetch reads before its pattern.
+    sprite_y: [u8; 8],
+    sprite_tile: [u8; 8],
     sprite_attr: [u8; 8],
     sprite_lo: [u8; 8],
     sprite_hi: [u8; 8],
@@ -104,6 +173,27 @@ pub struct Ppu {
     /// lets an A12 counter time how long the line stayed low.
     bus_addr: u16,
 
+    /// The low eight address lines, as held by the latch outside the PPU.
+    ///
+    /// Those lines are shared with the data lines, so the PPU only drives
+    /// them for the first of an access's two dots and a latch holds them for
+    /// the second. The upper lines are driven throughout. So anything that
+    /// puts a different address out in between the two — a `$2006` write, a
+    /// `$2007` access — changes the upper half of what gets read without
+    /// changing the lower, and the read lands somewhere neither meant.
+    ale_latch: u8,
+
+    /// The last byte the PPU read off its bus.
+    bus_data: u8,
+
+    /// Dots left before a `$2007` read fills the read buffer.
+    ///
+    /// The buffer is not filled where the access happens but two dots later,
+    /// and while rendering it takes whatever the fetch landing on that dot
+    /// read — the register does not get a read of its own, it just borrows
+    /// the one the renderer was already doing.
+    buffer_fill: u8,
+
     nmi_output: bool,
     /// Whether rendering is running. A `$2001` write reaches this one dot
     /// later and `prev_rendering_enabled` a dot after that; splits use it.
@@ -114,14 +204,49 @@ pub struct Ppu {
     /// Set when `$2002` is read on the dot before vblank begins. The flag
     /// loses the collision: no flag that frame, and no NMI.
     vbl_suppress: bool,
+    /// Bit 7 as it stood when the current read of `$2002` began; see
+    /// [`Ppu::begin_status_read`].
+    vbl_latch: u8,
+    /// A sprite zero hit found on the dot that just went by. The comparison
+    /// is made as the pixel leaves; the flag behind it is set a dot later.
+    zero_hit_pending: bool,
+    /// The row of OAM that switching rendering off left to be overwritten.
+    /// See [`Ppu::corrupt_oam`].
+    oam_corrupt_row: Option<u8>,
+    /// A write to one of the registers, waiting for the dot that acts on it.
+    /// The processor lets go of the byte as `M2` falls; the PPU takes it in on
+    /// its own next edge, so nothing a write does is felt on the dot it
+    /// arrived on.
+    pending_write: Option<(u16, u8, u8)>,
+    /// A `$2007` access's step of the scroll counters, waiting the same way.
+    pending_increment: Option<u8>,
+    /// The byte the sprite unit has in hand. Everything it does passes through
+    /// here — the clear, the copying, the fetch — and a `$2004` read taken
+    /// while rendering finds this rather than OAM itself.
+    oam_buffer: u8,
+    /// A ninth sprite found on the line, on its way to the overflow flag: the
+    /// flag is not raised on the step that finds it, but on the one after.
+    eval_overflow_pending: bool,
+    /// Steps still owed to the ninth sprite: having found it, the unit reads
+    /// the rest of it out before giving up on the line entirely.
+    eval_extra: u8,
 
     /// Value last seen on the PPU's own data bus, returned by write-only reads.
     open_bus: u8,
+    /// The frame on which the data bus was last driven, for [`Ppu::decay_bus`].
+    open_bus_frame: u64,
 
-    /// Boxed so the console's whole state does not carry a quarter-megabyte
-    /// picture inline through every move; save states skip it entirely.
-    #[cfg_attr(feature = "snapshot", serde(skip, default = "crate::snapshot::blank_frame"))]
-    framebuffer: Box<[u32; FRAME_WIDTH * FRAME_HEIGHT]>,
+    /// The finished picture, as colour identities rather than RGB: the
+    /// six-bit palette entry in the low bits, the three `$2001` emphasis bits
+    /// above it. See [`expand`].
+    ///
+    /// The only picture kept. Both front ends want something else anyway, so
+    /// an RGB plane here would be a palette lookup and a second store per
+    /// pixel for a picture nobody reads.
+    ///
+    /// Boxed to keep it out of the machine's state; save states skip it.
+    #[cfg_attr(feature = "snapshot", serde(skip, default = "crate::snapshot::blank_ids"))]
+    color_ids: Box<[u16; FRAME_WIDTH * FRAME_HEIGHT]>,
 }
 
 mod background;
@@ -131,6 +256,18 @@ mod render;
 mod scroll;
 mod sprites;
 
+/// How long the PPU's data bus holds a value before it leaks away.
+///
+/// The bus is capacitance, not a register, so a value left alone fades rather
+/// than persisting: roughly six hundred milliseconds on real silicon, varying
+/// with the chip and its temperature. Counted in frames because that is the
+/// coarsest clock that still lands well inside the second AccuracyCoin allows,
+/// on both television systems.
+///
+/// Modelled as the whole bus going at once. Hardware loses it bit by bit at
+/// rates no two chips agree on, which is not a thing worth reproducing.
+const BUS_DECAY_FRAMES: u64 = 36;
+
 impl Ppu {
     pub fn new(tv: TvSystem) -> Self {
         Ppu {
@@ -138,6 +275,9 @@ impl Ppu {
             mask: 0,
             status: 0,
             oam_addr: 0,
+            oam2_addr: 0,
+            oam2_full: false,
+            eval_start: 0,
             v: 0,
             t: 0,
             x: 0,
@@ -162,12 +302,13 @@ impl Ppu {
             bg_shift_hi: 0,
             at_shift_lo: 0,
             at_shift_hi: 0,
-            sprite_count: 0,
             eval_n: 0,
             eval_m: 0,
-            eval_found: 0,
             eval_done: true,
-            sprite_x: [0; 8],
+            sprite_counter: [0; 8],
+            sprite_counting: [true; 8],
+            sprite_y: [0; 8],
+            sprite_tile: [0; 8],
             sprite_attr: [0; 8],
             sprite_lo: [0; 8],
             sprite_hi: [0; 8],
@@ -175,13 +316,25 @@ impl Ppu {
             sprite_zero_loaded: false,
             sprite_zero_next: false,
             bus_addr: 0,
+            ale_latch: 0,
+            bus_data: 0,
+            buffer_fill: 0,
             rendering_enabled: false,
             prev_rendering_enabled: false,
             need_state_update: false,
             vbl_suppress: false,
+            vbl_latch: 0,
+            zero_hit_pending: false,
+            oam_corrupt_row: None,
+            pending_write: None,
+            pending_increment: None,
+            oam_buffer: 0xff,
+            eval_overflow_pending: false,
+            eval_extra: 0,
             nmi_output: false,
             open_bus: 0,
-            framebuffer: Box::new([0; FRAME_WIDTH * FRAME_HEIGHT]),
+            open_bus_frame: 0,
+            color_ids: Box::new([0; FRAME_WIDTH * FRAME_HEIGHT]),
         }
     }
 
@@ -201,8 +354,9 @@ impl Ppu {
         self.dot = 0;
     }
 
-    pub fn framebuffer(&self) -> &[u32; FRAME_WIDTH * FRAME_HEIGHT] {
-        &self.framebuffer
+    /// The completed frame as colour identities; see the field.
+    pub fn color_ids(&self) -> &[u16; FRAME_WIDTH * FRAME_HEIGHT] {
+        &self.color_ids
     }
 
     /// The `/NMI` line: a level held while vblank and the enable bit coincide,
@@ -232,6 +386,11 @@ impl Ppu {
                 // Switching rendering off mid-screen hands the PPU bus back to
                 // the current VRAM address.
                 self.bus_addr = self.v & 0x3fff;
+                // It also leaves the sprite unit halfway through something,
+                // and a row of OAM pays for it when rendering comes back.
+                if (1..=320).contains(&self.dot) {
+                    self.oam_corrupt_row = Some(self.oam2_addr & 0x1f);
+                }
                 if (65..=256).contains(&self.dot) {
                     // Doing so during sprite evaluation nudges the OAM address.
                     self.oam_addr = self.oam_addr.wrapping_add(1);

@@ -25,7 +25,12 @@ pub use banks::Banks;
 
 /// A cartridge mapper. Address ranges outside a method's documented window are
 /// never passed to it, so implementations need not re-check them.
-pub trait Mapper {
+/// `Send` so a whole [`crate::Nes`] can be handed to a thread of its own.
+///
+/// Every board here is plain data, so this costs nothing to satisfy — but
+/// without it the trait object poisons the machine that holds it, and a front
+/// end cannot run the console anywhere but the thread that built it.
+pub trait Mapper: Send {
     /// This board's registers, as bytes for a save state. Required rather
     /// than defaulted: a board that forgot would drop its banking into a file
     /// that loads with the wrong pages showing, rather than fail to build.

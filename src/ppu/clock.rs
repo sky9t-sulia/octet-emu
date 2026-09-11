@@ -30,6 +30,9 @@ impl Ppu {
     }
 
     fn dot_tick(&mut self, mapper: &mut dyn Mapper) {
+        // Whatever the processor wrote on the dot just gone is felt now.
+        self.apply_write(mapper);
+
         let pre_render = self.scanline == -1;
         let visible = self.scanline >= 0 && self.scanline < 240;
 
@@ -38,12 +41,55 @@ impl Ppu {
             self.status &= !0xe0;
         }
 
+        // The comparison the dot just gone made, reaching the flag.
+        if self.zero_hit_pending {
+            self.status |= 0x40;
+            self.zero_hit_pending = false;
+        }
+
+        // The shifter counters run on every dot a pixel could come out of,
+        // whether or not one does: forced blank stops the shifting below, and
+        // the fetch that reloads them, but never the counting.
+        if self.dot >= 1 && self.dot <= 256 {
+            self.step_sprite_counters();
+        }
+
         if self.rendering() && (visible || pre_render) {
+            // Rendering coming back is when OAM pays for having had it taken
+            // away mid-line.
+            self.corrupt_oam();
+
+            // Secondary OAM is cleared a byte every two dots, over the first
+            // sixty-four of a visible line. The pre-render line does not do it,
+            // which is what leaves last frame's sprites to be drawn on line 0.
+            if visible && self.dot >= 1 && self.dot <= 64 {
+                self.clear_secondary_oam();
+            }
+
+            // The secondary OAM address goes back to the start of its memory
+            // three times a line — at the end of the clear, the end of
+            // evaluation, and the end of the line — and whatever pinned it is
+            // let go at the same moments. Rendering has to be on as each goes
+            // by, which is how the address can still be frozen, or left part
+            // way along, when the next stage starts reading.
+            if matches!(self.dot, 63 | 255 | 339) {
+                self.oam2_full = false;
+            }
+            // The address itself goes back to the start of secondary OAM as
+            // each stage hands over to the next — the last of which is the
+            // fetch, which therefore starts reading at the first sprite.
+            if matches!(self.dot, 63 | 257 | 339) {
+                self.oam2_addr = 0;
+            }
+
             if (self.dot >= 1 && self.dot <= 256) || (self.dot >= 321 && self.dot <= 336) {
                 if visible && self.dot <= 256 {
                     self.render_pixel();
                 }
                 self.shift_background();
+                if self.dot <= 256 {
+                    self.shift_sprites();
+                }
                 self.background_fetch(mapper);
             } else if self.dot == 257 {
                 self.copy_x();
@@ -52,6 +98,13 @@ impl Ppu {
                 // them to work out where it is in the frame.
                 let addr = 0x2000 | (self.v & 0x0fff);
                 self.nt_latch = self.read_vram(addr, mapper);
+                // The second of them is also where every counter is told to
+                // count again. Rendering has to be on for that to happen: if
+                // it is not, a sprite that was being drawn stays that way, and
+                // is drawn again from wherever rendering resumes.
+                if self.dot == 339 {
+                    self.sprite_counting = [true; 8];
+                }
             }
 
             if self.dot == 256 {
@@ -63,25 +116,34 @@ impl Ppu {
                 self.copy_y();
             }
 
-            // Evaluation only happens on visible lines; the pre-render line
-            // clears secondary OAM but finds nothing.
-            if visible {
+            // Evaluation only happens on visible lines. The pre-render line
+            // neither clears secondary OAM nor looks at OAM at all, so its
+            // fetch loads the shifters from whatever the last visible line
+            // left behind — and those sprites are drawn on scanline 0.
+            if visible && (65..=256).contains(&self.dot) {
                 if self.dot == 65 {
                     self.start_sprite_evaluation();
-                } else if self.dot > 65 && self.dot <= 256 && self.dot % 2 == 1 {
-                    self.step_sprite_evaluation();
+                }
+                // Two dots to a step: OAM is read on the odd one, secondary
+                // OAM written on the even one.
+                if self.dot % 2 == 1 {
+                    self.sprite_eval_read();
+                } else {
+                    self.sprite_eval_write();
                 }
             }
             if self.dot == 257 {
-                if !visible {
-                    // The pre-render line evaluates nothing.
-                    self.start_sprite_evaluation();
-                }
                 self.prepare_sprites();
             }
             if self.dot >= 257 && self.dot <= 320 {
                 self.sprite_fetch(mapper);
             }
+            // Between the fetch ending and the next line's clear, the unit
+            // sits reading secondary OAM at wherever its address came to rest.
+            if self.dot == 0 || self.dot >= 321 {
+                self.oam_buffer = self.secondary_oam[(self.oam2_addr & 0x1f) as usize];
+            }
+
             // OAM address is cleared throughout sprite fetching.
             if self.dot >= 257 && self.dot <= 320 {
                 self.oam_addr = 0;
@@ -90,9 +152,11 @@ impl Ppu {
             // With rendering off the backdrop is still drawn — and if `v`
             // happens to point into the palette, that entry shows instead.
             let index = if (self.v & 0x3f00) == 0x3f00 { (self.v & 0x1f) as u8 } else { 0 };
-            let color = self.read_palette(0x3f00 + index as u16) as usize;
+            let color = self.read_palette(0x3f00 + index as u16) as usize & 0x3f;
             let x = (self.dot - 1) as usize;
-            self.framebuffer[self.scanline as usize * FRAME_WIDTH + x] = PALETTE[color & 0x3f];
+            // No emphasis here: with rendering off, `$2001`'s tint bits do
+            // not reach the backdrop the way they do a rendered pixel.
+            self.color_ids[self.scanline as usize * FRAME_WIDTH + x] = color as u16;
         }
 
         if self.scanline == self.vblank_scanline() && self.dot == 1 {
@@ -101,6 +165,7 @@ impl Ppu {
             }
             self.vbl_suppress = false;
             self.frame += 1;
+            self.decay_bus();
         }
 
         if self.need_state_update {
@@ -108,6 +173,15 @@ impl Ppu {
         }
 
         // The mapper samples A12 once per dot, not once per fetch.
+        // A `$2007` read taken while rendering fills the buffer here, two
+        // dots on, with whatever the bus carried in the meantime.
+        if self.buffer_fill > 0 {
+            self.buffer_fill -= 1;
+            if self.buffer_fill == 0 {
+                self.read_buffer = self.bus_data;
+            }
+        }
+
         mapper.tick_ppu_addr(self.bus_addr);
         self.advance_dot();
     }

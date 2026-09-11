@@ -23,20 +23,22 @@ impl Ppu {
         (palette * 4 + pattern, true)
     }
 
-    /// Colour index of the frontmost opaque sprite covering this dot, whether
-    /// it draws behind the background, and whether it is sprite zero.
-    fn sprite_pixel(&self, x: u16) -> (u8, bool, bool) {
+    /// Colour index of the frontmost opaque sprite at this dot, whether it
+    /// draws behind the background, and whether it is sprite zero.
+    ///
+    /// Which sprites are over this dot is not a question of where they are:
+    /// every sprite whose counter has run out is being drawn, and what it puts
+    /// out is whatever its shifter has reached.
+    fn sprite_pixel(&self) -> (u8, bool, bool) {
         if self.mask & 0x10 == 0 {
             return (0, false, false);
         }
-        for i in 0..self.sprite_count {
-            let sx = self.sprite_x[i] as u16;
-            if x < sx || x >= sx + 8 {
-                continue;
+        for i in 0..8 {
+            if self.sprite_counting[i] {
+                continue; // still counting down to its first pixel
             }
-            let bit = 7 - (x - sx);
-            let lo = (self.sprite_lo[i] >> bit) & 1;
-            let hi = (self.sprite_hi[i] >> bit) & 1;
+            let lo = (self.sprite_lo[i] >> 7) & 1;
+            let hi = (self.sprite_hi[i] >> 7) & 1;
             let pattern = (hi << 1) | lo;
             if pattern == 0 {
                 continue; // transparent: a lower-priority sprite may show
@@ -60,13 +62,13 @@ impl Ppu {
 
         let (bg_index, bg_opaque) = if clip_bg { (0, false) } else { self.background_pixel() };
         let (sp_index, sp_behind, is_zero) =
-            if clip_sp { (0, false, false) } else { self.sprite_pixel(x) };
+            if clip_sp { (0, false, false) } else { self.sprite_pixel() };
         let sp_opaque = sp_index != 0;
 
         // Sprite zero hit needs both layers opaque, and never fires on the
         // last dot of the line.
         if is_zero && bg_opaque && sp_opaque && x != 255 && self.rendering() {
-            self.status |= 0x40;
+            self.zero_hit_pending = true;
         }
 
         let index = match (bg_opaque, sp_opaque) {
@@ -78,19 +80,18 @@ impl Ppu {
             }
         };
 
-        let color = self.read_palette(0x3f00 + index as u16) as usize;
-        let mut rgb = PALETTE[color & 0x3f];
-        // The emphasis bits attenuate the two channels they do not boost.
-        if self.mask & 0xe0 != 0 {
-            rgb = emphasize(rgb, self.mask >> 5);
-        }
-        self.framebuffer[y as usize * FRAME_WIDTH + x as usize] = rgb;
+        // `read_palette` has already folded in greyscale, so this is the
+        // colour as the PPU would emit it, with the emphasis bits above.
+        let color = self.read_palette(0x3f00 + index as u16) as usize & 0x3f;
+        let emphasis = self.mask >> 5;
+        self.color_ids[y as usize * FRAME_WIDTH + x as usize] =
+            color as u16 | ((emphasis as u16) << 6);
     }
 }
 
 /// Apply the `$2001` colour emphasis bits: each set bit attenuates the other
 /// two channels by roughly 20%.
-fn emphasize(rgb: u32, bits: u8) -> u32 {
+pub(super) fn emphasize(rgb: u32, bits: u8) -> u32 {
     let (r, g, b) = ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
     let att = |c: u32| c * 4 / 5;
     let (mut r, mut g, mut b) = (r, g, b);

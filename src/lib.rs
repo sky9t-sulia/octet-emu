@@ -11,7 +11,8 @@
 //! let mut nes = Nes::new(cart).unwrap();
 //! nes.set_button(0, Button::Start, true);
 //! nes.run_frame();
-//! let pixels = nes.framebuffer(); // 256 x 240, packed 0x00RRGGBB
+//! let mut pixels = vec![0u8; 256 * 240 * 4];
+//! nes.write_rgba(&mut pixels); // packed RGBA8888
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -33,7 +34,7 @@ mod snapshot;
 pub use cartridge::{Cartridge, Mirroring, RomError, TvSystem};
 pub use input::Button;
 pub use mapper::UnsupportedMapper;
-pub use ppu::{FRAME_HEIGHT, FRAME_WIDTH};
+pub use ppu::{expand, palette_table, COLOR_IDS, FRAME_HEIGHT, FRAME_WIDTH};
 
 use apu::Apu;
 use cpu::{Cpu, CpuBus};
@@ -106,30 +107,39 @@ struct Bus {
     mapper: Box<dyn Mapper>,
     controllers: [Controller; 2],
 
-    /// Last value on the data bus, returned by reads that decode to nothing.
+    /// Last value on the external data bus, returned by reads that decode to
+    /// nothing.
     open_bus: u8,
+    /// Last value on the processor's own data bus.
+    ///
+    /// Two buses, not one. Every access puts its value on this one, a `$4015`
+    /// read included — and that read is the one access that never reaches the
+    /// external bus. A transfer's reads are the mirror case: they drive the
+    /// external bus and leave this alone, because the processor is not the one
+    /// doing them.
+    ///
+    /// Bit 5 of `$4015` has no flag behind it and reports this.
+    internal_bus: u8,
 
-    // ---- DMA unit: one machine for both. Reads on get cycles, writes on put.
-    /// A DMA has been requested and the CPU must be halted on its next read.
-    need_halt: bool,
-    /// The DMC's transfer includes a dummy cycle before the real read.
-    need_dummy_read: bool,
-    /// Set by a write to $4014; raises `need_halt` on the following cycle.
-    sprite_dma_delay: bool,
+    // ---- DMA unit. Two requesters, one bus: see `dma_step`.
+    /// The sprite transfer and the DMC's fetch, each at whatever cycle it is
+    /// up to. Both can be in flight at once, which is the whole difficulty.
+    oam: Oam,
+    dmc: Dmc,
+    /// The page `$4014` named.
+    sprite_dma_page: u8,
+    /// Byte read on a get cycle, written to $2004 on the following put cycle.
+    dma_latch: u8,
+    /// A write to `$4016` waiting for the phase that acts on it.
+    ///
+    /// The strobe does not land where the write happens: it waits for the edge
+    /// out of a get cycle, so a write on the wrong phase takes a cycle longer
+    /// to reach the pads than one on the right phase.
+    strobe_pending: Option<u8>,
     /// The port last read through $4016/$4017, when, and what it gave.
     prev_input_addr: u16,
     prev_input_cycle: [u64; 2],
     prev_input_value: [u8; 2],
-    dmc_dma_running: bool,
-    sprite_dma_running: bool,
-    sprite_dma_page: u8,
-    /// Set once the halt cycle is spent and the transfer proper is under way.
-    dma_active: bool,
-    /// Progress through the 256 read/write pairs of an OAM transfer.
-    sprite_counter: u16,
-    sprite_read_addr: u8,
-    /// Byte read on a get cycle, written to $2004 on the following put cycle.
-    dma_latch: u8,
 
     /// CPU cycles since power-on. Its parity decides get versus put cycles.
     cycle_count: u64,
@@ -159,18 +169,14 @@ impl Nes {
                 mapper,
                 controllers: [Controller::new(), Controller::new()],
                 open_bus: 0,
-                need_halt: false,
-                need_dummy_read: false,
-                sprite_dma_delay: false,
+                internal_bus: 0,
+                oam: Oam::Idle,
+                dmc: Dmc::Idle,
+                strobe_pending: None,
                 prev_input_addr: 0,
                 prev_input_cycle: [u64::MAX; 2],
                 prev_input_value: [0; 2],
-                dmc_dma_running: false,
-                sprite_dma_running: false,
                 sprite_dma_page: 0,
-                dma_active: false,
-                sprite_counter: 0,
-                sprite_read_addr: 0,
                 dma_latch: 0,
                 // Incremented at the start of a cycle, so the first is 0 and
                 // get/put parity lines up with the hardware's.
@@ -203,15 +209,62 @@ impl Nes {
         self.cpu.step(&mut self.bus);
     }
 
-    /// The completed frame: 256 x 240 pixels, each `0x00RRGGBB`.
-    pub fn framebuffer(&self) -> &[u32; FRAME_WIDTH * FRAME_HEIGHT] {
-        self.bus.ppu.framebuffer()
+    /// The completed frame, four bytes a pixel: red, green, blue, and an
+    /// alpha byte always `0xff` — padding, for a texture upload's alignment.
+    ///
+    /// `out` needs `FRAME_WIDTH * FRAME_HEIGHT * 4` bytes. Returns how many
+    /// were written, or `None` if it is short. A front end that would rather
+    /// expand the picture itself should take [`Nes::color_ids`] instead;
+    /// nothing here expands unless this is called.
+    pub fn write_rgba(&self, out: &mut [u8]) -> Option<usize> {
+        let needed = FRAME_WIDTH * FRAME_HEIGHT * 4;
+        if out.len() < needed {
+            return None;
+        }
+        for (id, px) in self.color_ids().iter().zip(out.chunks_exact_mut(4)) {
+            let rgb = expand(*id);
+            px[0] = (rgb >> 16) as u8;
+            px[1] = (rgb >> 8) as u8;
+            px[2] = rgb as u8;
+            px[3] = 0xff;
+        }
+        Some(needed)
+    }
+
+    /// The completed frame as the PPU's own colour identities: the six-bit
+    /// palette entry in the low bits, the three emphasis bits above it.
+    ///
+    /// The same picture [`Nes::framebuffer`] gives, in the form the hardware
+    /// actually produced. A front end holding the NTSC palette can expand
+    /// these itself and carry a quarter of the bytes.
+    pub fn color_ids(&self) -> &[u16; FRAME_WIDTH * FRAME_HEIGHT] {
+        self.bus.ppu.color_ids()
     }
 
     /// Drain the audio produced since the last call, as mono samples in
     /// `-1.0..=1.0` at the rate reported by [`Nes::sample_rate`].
     pub fn drain_audio(&mut self, out: &mut alloc::vec::Vec<f32>) {
         self.bus.apu.drain(out);
+    }
+
+    /// Drain the audio produced since the last call as interleaved stereo
+    /// pairs, left then right, the right delayed a few milliseconds.
+    ///
+    /// The console is mono, so the second channel is made rather than
+    /// emulated: see [`apu::STEREO_DELAY_MS`]. [`Nes::drain_audio`] still
+    /// gives the one channel the hardware actually produced.
+    pub fn drain_audio_stereo(&mut self, out: &mut alloc::vec::Vec<f32>) {
+        self.bus.apu.drain_stereo(out);
+    }
+
+    /// How far the second channel lags, in milliseconds. Zero for mono.
+    pub fn set_stereo_delay(&mut self, ms: f32) {
+        self.bus.apu.set_stereo_delay(ms);
+    }
+
+    /// The delay currently in use, in milliseconds.
+    pub fn stereo_delay(&self) -> f32 {
+        self.bus.apu.stereo_delay()
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -311,17 +364,71 @@ impl Nes {
 /// Which of the three PPU dots in a CPU cycle the bus access is aligned to.
 const ACCESS_DOT: u32 = 2;
 
-impl Bus {
-    /// Account for one DMA cycle passing: the halt cycle is spent first, then
-    /// the DMC's dummy cycle, before any real transfer can happen.
-    fn consume_dma_cycle(&mut self) {
-        if self.need_halt {
-            self.need_halt = false;
-        } else if self.need_dummy_read {
-            self.need_dummy_read = false;
-        }
-    }
+/// Which half of the processor's clock a cycle falls on.
+///
+/// The 2A03 divides the processor clock in two, and which half a cycle is on
+/// decides what may happen on it: a transfer may read on a get and write on a
+/// put, and several things in the APU happen on one of the two *edges*
+/// between them rather than during a cycle at all. Those edges are what the
+/// hardware documentation talks about, so they are what this models — a bare
+/// parity invites each caller to decide for itself which way round it meant,
+/// and three of them once got it backwards.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+pub enum Phase {
+    /// A cycle a transfer may read on.
+    Get,
+    /// A cycle a transfer may write on.
+    Put,
+}
 
+/// Which parity of [`Bus::cycle_count`] is a get cycle.
+///
+/// The console alternates between cycles a transfer may read on and cycles it
+/// may write on. Which one a given CPU cycle is carries no meaning by itself —
+/// on hardware the phase at power-on is not even fixed — but every decision
+/// the DMA unit makes hangs off it, so it is named once, here.
+const GET_PHASE: u64 = 1;
+
+/// How far the sprite transfer has got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+enum Oam {
+    Idle,
+    /// `$4014` has been written, but the request is not up yet.
+    ///
+    /// Page 13's `DMC DMA + OAM DMA` wants the halt a cycle earlier than
+    /// this, and its answer key matches exactly without this state — but
+    /// moving the halt also moves the transfer onto the other phase, so it
+    /// gains the alignment cycle it did not need and the whole transfer runs
+    /// 514 cycles instead of 513. That cycle shifts everything downstream and
+    /// costs five other tests. The two want the phase itself corrected, not
+    /// the halt moved, and that reaches further than this enum.
+    Queued,
+    /// Waiting to take the bus off the processor. A write already drives the
+    /// bus, so a halt landing on one waits for the processor to read.
+    Asked,
+    /// The halt is spent. Waiting for a get cycle to start moving on.
+    Aligning,
+    /// Moving bytes, counted in cycles rather than bytes: five hundred and
+    /// twelve steps, the even ones reading and the odd ones writing.
+    Moving(u16),
+}
+
+/// How far the DMC's fetch has got.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+enum Dmc {
+    Idle,
+    /// Waiting to take the bus off the processor.
+    Asked,
+    /// The halt is spent; the dummy cycle is next.
+    Dummy,
+    /// The dummy is spent. Waiting for a get cycle to read on.
+    Aligning,
+}
+
+impl Bus {
     /// Read a controller port. The strobe clocks the shift register, not the
     /// read, so consecutive reads of one port advance it only once.
     fn read_controller(&mut self, port: usize) -> u8 {
@@ -339,9 +446,11 @@ impl Bus {
     /// A DMA read. If the CPU was halted reading `halted_at` in $4000-$401F,
     /// the 2A03 reads that register too, which is the DMC input glitch.
     fn dma_read(&mut self, addr: u16, halted_at: u16) -> u8 {
-        self.tick_before();
-        let val = self.dma_read_raw(addr, halted_at);
-        self.tick_after();
+        // The transfer drives the external bus; the processor's own bus is not
+        // party to it and keeps whatever the processor last put there.
+        let held = self.internal_bus;
+        let val = self.read_cycle(addr, |bus| bus.dma_read_raw(addr, halted_at));
+        self.internal_bus = held;
         val
     }
 
@@ -360,12 +469,10 @@ impl Bus {
             return self.read_raw(addr);
         }
         match internal {
-            // Reading $4015 drives only the CPU's internal bus, so the read the
+            // The status read is answered on the internal bus, so the read the
             // DMA meant to do still happens on the external one.
             0x4015 => {
-                let external_bus = self.open_bus;
                 let val = self.read_raw(0x4015);
-                self.open_bus = external_bus;
                 self.read_raw(addr);
                 val
             }
@@ -390,16 +497,32 @@ impl Bus {
         // APU and mapper run at the start of the cycle, the PPU straddles it.
         // This phase decides when APU interrupts land.
         self.cycle_count = self.cycle_count.wrapping_add(1);
-        self.apu.tick();
-        // The DMC asks for a byte through the same halt mechanism OAM DMA
-        // uses, and the two can be in flight at once.
+        // The APU is handed the phase rather than counting it out itself, so
+        // that the one divider in here is the one everything reads.
+        self.apu.tick(Self::phase(self.cycle_count));
+        // The DMC asks for a byte. Its halt and dummy cycles always happen,
+        // whether or not the sprite transfer is already running: see
+        // `dma_step` for who gets to move something on them.
         if self.apu.take_dmc_request() {
-            self.dmc_dma_running = true;
-            self.need_dummy_read = true;
-            self.need_halt = true;
+            self.dmc = Dmc::Asked;
         }
-        if core::mem::take(&mut self.sprite_dma_delay) {
-            self.need_halt = true;
+        // Disabling the channel gives up a fetch that is still taking the
+        // bus: one that has not spent a cycle yet simply never does, and one
+        // that has spent its halt stops there, a cycle of stall and nothing
+        // else. Past that the fetch is committed and reads regardless — by
+        // then it is only waiting for a get cycle to read on.
+        if self.apu.take_dmc_abort() && matches!(self.dmc, Dmc::Asked | Dmc::Dummy) {
+            self.dmc = Dmc::Idle;
+        }
+        // "Controllers should be strobed when the CPU transitions from a get
+        // cycle to a put cycle", and not on the opposite edge — so it lands
+        // at the start of a put, rather than where the write itself did. A
+        // write arriving on a get waits for the next put.
+        if Self::phase(self.cycle_count) == Phase::Put {
+            if let Some(val) = self.strobe_pending.take() {
+                self.controllers[0].strobe(val);
+                self.controllers[1].strobe(val);
+            }
         }
         self.mapper.tick_cpu();
     }
@@ -428,10 +551,21 @@ impl Bus {
     /// The bus access itself, with no cycle attached. A DMA cycle can perform
     /// more than one of these, so the ticking lives in the callers.
     fn read_raw(&mut self, addr: u16) -> u8 {
+        // The one register inside the 2A03 itself. The processor answers it on
+        // its own internal bus, and nothing is put on the external one — so
+        // unlike every other read this leaves open bus holding whatever it
+        // held before, and the status byte is not what a later read of an
+        // undriven address sees.
+        if addr == 0x4015 {
+            let val = self.apu.read_status(self.internal_bus);
+            // Reaches the processor's own bus, and no further.
+            self.internal_bus = val;
+            return val;
+        }
+
         let val = match addr {
             0x0000..=0x1fff => self.ram[addr as usize & 0x07ff],
             0x2000..=0x3fff => self.ppu.read_register(addr, &mut *self.mapper, self.open_bus),
-            0x4015 => self.apu.read_status(),
             0x4016 => (self.open_bus & 0xe0) | self.read_controller(0),
             0x4017 => (self.open_bus & 0xe0) | self.read_controller(1),
             // The rest of the $4000 block is write-only and reads as open bus.
@@ -439,25 +573,23 @@ impl Bus {
             _ => self.mapper.cpu_read(addr).unwrap_or(self.open_bus),
         };
         self.open_bus = val;
+        self.internal_bus = val;
         val
     }
 
     fn write_raw(&mut self, addr: u16, val: u8) {
         self.open_bus = val;
+        self.internal_bus = val;
         match addr {
             0x0000..=0x1fff => self.ram[addr as usize & 0x07ff] = val,
             0x2000..=0x3fff => self.ppu.write_register(addr, val, &mut *self.mapper),
             0x4014 => {
-                self.sprite_dma_running = true;
                 self.sprite_dma_page = val;
                 // The DMC's request is raised at the start of a cycle, this
                 // write at the end, so its halt begins a cycle later.
-                self.sprite_dma_delay = true;
+                self.oam = Oam::Asked;
             }
-            0x4016 => {
-                self.controllers[0].strobe(val);
-                self.controllers[1].strobe(val);
-            }
+            0x4016 => self.strobe_pending = Some(val),
             0x4000..=0x4017 => self.apu.write_register(addr, val),
             0x4018..=0x401f => {}
             _ => self.mapper.cpu_write(addr, val),
@@ -465,12 +597,61 @@ impl Bus {
     }
 }
 
-impl CpuBus for Bus {
-    fn read(&mut self, addr: u16) -> u8 {
+impl Bus {
+    /// A whole read cycle: the dots before the access, the access, and the
+    /// dots that complete it.
+    ///
+    /// A read of `$2002` is the one access the PPU feels at two moments, and
+    /// the only reason this is not simply the three lines it looks like. Bit 7
+    /// has a latch behind it, filled and the flag it copied cleared as `M2`
+    /// goes high, where the access lands; the two sprite flags have no latch,
+    /// and are whatever they are when `M2` goes low again — 1.875 dots later
+    /// on a revision G chip, which is this cycle's last dot. So for that one
+    /// address the access is taken after the cycle's dots rather than between
+    /// them, and reports flags the rest of the machine has moved on to.
+    fn read_cycle(&mut self, addr: u16, access: impl FnOnce(&mut Self) -> u8) -> u8 {
         self.tick_before();
-        let val = self.read_raw(addr);
+        if Self::is_status(addr) {
+            self.ppu.begin_status_read();
+            self.tick_after();
+            return access(self);
+        }
+        let val = access(self);
         self.tick_after();
         val
+    }
+
+    /// Whether an address is the PPU's status register, mirrors included.
+    fn is_status(addr: u16) -> bool {
+        (0x2000..=0x3fff).contains(&addr) && addr & 7 == 2
+    }
+
+    /// Which half of the clock the cycle with this count falls on.
+    fn phase(count: u64) -> Phase {
+        if count & 1 == GET_PHASE {
+            Phase::Get
+        } else {
+            Phase::Put
+        }
+    }
+
+    /// One step of the sprite transfer: read on the even steps, write on the
+    /// odd ones, five hundred and twelve of them.
+    fn move_sprite_byte(&mut self, step: u16, read_addr: u16) {
+        if step & 1 == 0 {
+            let addr = ((self.sprite_dma_page as u16) << 8) | (step >> 1);
+            self.dma_latch = self.dma_read(addr, read_addr);
+        } else {
+            let val = self.dma_latch;
+            self.write(0x2004, val);
+        }
+        self.oam = if step + 1 == 0x200 { Oam::Idle } else { Oam::Moving(step + 1) };
+    }
+}
+
+impl CpuBus for Bus {
+    fn read(&mut self, addr: u16) -> u8 {
+        self.read_cycle(addr, |bus| bus.read_raw(addr))
     }
 
     fn write(&mut self, addr: u16, val: u8) {
@@ -488,64 +669,97 @@ impl CpuBus for Bus {
     }
 
     fn dma_pending(&self) -> bool {
-        self.need_halt || (self.dma_active && (self.dmc_dma_running || self.sprite_dma_running))
+        self.dmc != Dmc::Idle || matches!(self.oam, Oam::Asked | Oam::Aligning | Oam::Moving(_))
     }
 
     /// Advance the DMA by one cycle, so the CPU keeps polling its interrupt
     /// lines throughout. `read_addr` is what it was about to read.
+    ///
+    /// One call is one CPU cycle. Each cycle is either spent taking the bus
+    /// off the processor or spent moving a byte, and the two requesters make
+    /// that choice separately — which is the whole subtlety here. Parity is
+    /// read one cycle ahead, because it is the cycle about to run that
+    /// matters and [`Bus::tick_before`], inside the access below, is what
+    /// advances the count.
     fn dma_step(&mut self, read_addr: u16) {
-        if !self.dma_active {
-            // The halt cycle: the CPU's read is repeated and discarded.
-            self.dma_active = true;
-            self.need_halt = false;
-            self.sprite_counter = 0;
-            self.sprite_read_addr = 0;
-            self.dma_read(read_addr, read_addr);
+        let get = Self::phase(self.cycle_count.wrapping_add(1)) == Phase::Get;
+        // Cycles spent taking the bus. Both requesters can be spending one at
+        // the same time, and neither moves anything on its own: all a halt or
+        // a dummy has to achieve is that the processor is off the bus by the
+        // end of it. The fetch spends two, the sprite transfer one.
+        let dmc_taking = matches!(self.dmc, Dmc::Asked | Dmc::Dummy);
+        let oam_taking = self.oam == Oam::Asked;
+        if dmc_taking {
+            self.dmc = if self.dmc == Dmc::Asked { Dmc::Dummy } else { Dmc::Aligning };
+        }
+        if oam_taking {
+            self.oam = Oam::Aligning;
+        }
+
+        // The fetch, which outranks the sprite transfer for a get cycle — but
+        // only once it is past taking the bus.
+        if !dmc_taking && self.dmc == Dmc::Aligning && get {
+            self.dmc = Dmc::Idle;
+            let addr = self.apu.dmc_read_address();
+            let val = self.dma_read(addr, read_addr);
+            self.apu.load_dmc_sample(val);
             return;
         }
 
-        // Reads are only possible on get cycles and writes on put cycles;
-        // anything else is an alignment read.
-        let get_cycle = self.cycle_count % 2 == 0;
-        if get_cycle {
-            if self.dmc_dma_running && !self.need_halt && !self.need_dummy_read {
-                self.consume_dma_cycle();
-                let addr = self.apu.dmc_read_address();
-                let val = self.dma_read(addr, read_addr);
-                self.dmc_dma_running = false;
-                self.apu.load_dmc_sample(val);
-            } else if self.sprite_dma_running {
-                self.consume_dma_cycle();
-                let addr = ((self.sprite_dma_page as u16) << 8) | self.sprite_read_addr as u16;
-                self.dma_latch = self.dma_read(addr, read_addr);
-                self.sprite_read_addr = self.sprite_read_addr.wrapping_add(1);
-                self.sprite_counter += 1;
-            } else {
-                // The DMC is waiting out its halt or dummy cycle.
-                self.consume_dma_cycle();
-                self.dma_read(read_addr, read_addr);
+        // The sprite transfer, which begins on a get cycle and then
+        // alternates, so its step's parity and the cycle's agree — until a
+        // fetch takes a get out from under it, and then it waits for them to
+        // line up again.
+        //
+        // It may use a cycle the fetch is only spending to take the bus:
+        // the processor is already off the bus, so there is nothing for that
+        // halt to achieve and the transfer loses nothing to it. This is why a
+        // fetch during a sprite transfer costs the processor two cycles
+        // rather than four — the get the fetch reads on, and the one the
+        // transfer then needs to get back into phase.
+        if !oam_taking {
+            match self.oam {
+                Oam::Aligning if get => {
+                    self.oam = Oam::Moving(0);
+                    self.move_sprite_byte(0, read_addr);
+                    return;
+                }
+                Oam::Moving(step) if (step & 1 == 0) == get => {
+                    self.move_sprite_byte(step, read_addr);
+                    return;
+                }
+                _ => {}
             }
-        } else if self.sprite_dma_running && self.sprite_counter & 1 != 0 {
-            self.consume_dma_cycle();
-            let val = self.dma_latch;
-            self.write(0x2004, val);
-            self.sprite_counter += 1;
-            if self.sprite_counter == 0x200 {
-                self.sprite_dma_running = false;
-            }
-        } else {
-            // Align to the next get cycle.
-            self.consume_dma_cycle();
-            self.dma_read(read_addr, read_addr);
         }
 
-        if !self.dmc_dma_running && !self.sprite_dma_running {
-            self.dma_active = false;
-        }
+        // Nothing moved: a halt, a dummy, or a cycle spent waiting for the
+        // parity a transfer needs. All of them read wherever the processor's
+        // address bus is still pointing.
+        self.dma_read(read_addr, read_addr);
     }
 }
 
 impl Nes {
+    /// The console's two kilobytes of work RAM, as the CPU sees it at $0000.
+    ///
+    /// Read-only, and for looking rather than running: a debugger, a tracer,
+    /// or a test ROM that leaves its findings in memory rather than on screen.
+    pub fn ram(&self) -> &[u8; 0x0800] {
+        &self.bus.ram
+    }
+
+    /// A cartridge-space byte as the processor would see it, but without the
+    /// read happening.
+    ///
+    /// `$4020..=$FFFF` only, and for looking rather than running, the same as
+    /// [`Nes::ram`]: a debugger, or a test ROM that leaves its findings in
+    /// cartridge RAM and expects to be read out rather than watched. Floating
+    /// bus reads back as zero here rather than as whatever was last driven,
+    /// since nothing is being driven.
+    pub fn peek(&self, addr: u16) -> u8 {
+        self.bus.mapper.cpu_peek(addr).unwrap_or(0)
+    }
+
     /// A snapshot of the CPU registers, for debugging and tracing.
     pub fn cpu_state(&self) -> CpuState {
         CpuState {
@@ -582,6 +796,61 @@ mod tests {
             submapper: 0,
             mirroring: Mirroring::Horizontal,
             tv: TvSystem::Ntsc,
+        }
+    }
+
+    /// `write_rgba` must lay the picture out the way a caller expects it.
+    ///
+    /// This replaced a comparison between two planes: the PPU used to keep
+    /// the picture as RGB as well as identities, and the test checked they
+    /// agreed. There is one representation now, so what is left to get wrong
+    /// is the boundary — the byte order, the alpha, and refusing a buffer too
+    /// small rather than writing past it.
+    #[test]
+    fn write_rgba_fills_the_buffer_it_is_given() {
+        // Rendering on, so the picture is not all backdrop.
+        let code = [
+            0xa9, 0x3f, 0x8d, 0x06, 0x20, // LDA #$3F : STA $2006
+            0xa9, 0x00, 0x8d, 0x06, 0x20, // LDA #$00 : STA $2006
+            0xa2, 0x00, //                   LDX #$00
+            0x8e, 0x07, 0x20, //           - STX $2007
+            0xe8, //                       | INX
+            0xe0, 0x20, //                 | CPX #$20
+            0xd0, 0xf8, //                 - BNE back to STX
+            0xa9, 0x1e, 0x8d, 0x01, 0x20, // LDA #$1E : STA $2001
+            0x4c, 0x19, 0xc0, //             JMP $C019 — spin
+        ];
+        let mut nes = Nes::new(cart_with(&code)).unwrap();
+        nes.run_frame();
+        nes.run_frame();
+
+        let needed = FRAME_WIDTH * FRAME_HEIGHT * 4;
+        let mut out = vec![0u8; needed];
+        assert_eq!(nes.write_rgba(&mut out), Some(needed));
+
+        // Every pixel is its identity, expanded, with an opaque alpha.
+        for (id, px) in nes.color_ids().iter().zip(out.chunks_exact(4)) {
+            let rgb = expand(*id);
+            assert_eq!(
+                (px[0], px[1], px[2], px[3]),
+                ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 0xff),
+                "identity {id:#05x} came out wrong",
+            );
+        }
+
+        // A buffer one byte short is refused rather than half filled.
+        let mut short = vec![0u8; needed - 1];
+        assert_eq!(nes.write_rgba(&mut short), None);
+        assert!(short.iter().all(|b| *b == 0), "nothing should have been written");
+    }
+
+    /// The table a front end is handed must agree with expanding one at a time.
+    #[test]
+    fn the_palette_table_covers_every_identity() {
+        let table = palette_table();
+        assert_eq!(table.len(), COLOR_IDS);
+        for id in 0..COLOR_IDS {
+            assert_eq!(table[id], expand(id as u16), "identity {id}");
         }
     }
 

@@ -9,6 +9,17 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::cartridge::TvSystem;
+use crate::Phase;
+
+/// The half of the processor's clock the APU counts its own cycles on.
+///
+/// The pulse and noise timers advance here, and so does anything the unit
+/// measures in its own cycles rather than the processor's — including how
+/// long a write to `$4017` takes to be felt. Naming it once is what keeps
+/// those in step: a write landing on this phase is felt a cycle sooner than
+/// one landing between two of them, and that only means anything if "this
+/// phase" is the same phase in both places.
+const APU_CLOCK: Phase = Phase::Put;
 
 /// Length values indexed by the 5-bit field of `$4003`-style registers.
 const LENGTH_TABLE: [u8; 32] = [
@@ -41,6 +52,22 @@ const DMC_PERIOD_PAL: [u16; 16] =
 /// Output sample rate. Chosen to be a common device rate so frontends can hand
 /// the buffer straight to the audio API without resampling.
 pub const SAMPLE_RATE: u32 = 48_000;
+
+/// How far the second channel lags the first, in milliseconds, by default.
+///
+/// The console is mono: one DAC, one signal. Sent to both speakers unaltered
+/// it sits in a point between them, and a few milliseconds of delay on one
+/// side is enough for the ear to place the two arrivals apart and hear width
+/// instead — the precedence effect a stereo widener works on. Three or four
+/// is the useful window; below two it reads as a comb rather than a space,
+/// and past ten the arrivals separate into an echo.
+///
+/// This is presentation, not emulation, which is why it is a knob and not a
+/// constant of the machine — see [`Apu::set_stereo_delay`].
+pub const STEREO_DELAY_MS: f32 = 3.5;
+
+/// The longest delay the line will hold: twenty milliseconds.
+const STEREO_DELAY_MAX_MS: f32 = 20.0;
 
 // ---- Shared units -------------------------------------------------------
 
@@ -355,6 +382,11 @@ struct Dmc {
 
     /// Set when the channel wants the bus to fetch `current_addr`.
     wants_transfer: bool,
+
+    /// Set when a fetch already under way is to be given up. A disable that
+    /// arrives mid-fetch does not wait for it: the cycles it has already
+    /// taken off the processor are gone, but the read never happens.
+    drops_transfer: bool,
 }
 
 impl Default for Dmc {
@@ -380,6 +412,7 @@ impl Default for Dmc {
             transfer_start_delay: 0,
             disable_delay: 0,
             wants_transfer: false,
+            drops_transfer: false,
         }
     }
 }
@@ -403,8 +436,12 @@ impl Dmc {
             self.disable_delay -= 1;
             if self.disable_delay == 0 {
                 self.bytes_remaining = 0;
-                // A transfer that had not yet started is abandoned.
+                // Abandon the fetch whether or not it has started. One that
+                // had not been taken up simply never is; one that has is cut
+                // short where it stands, which is how a fetch ends up
+                // costing the processor a single cycle.
                 self.wants_transfer = false;
+                self.drops_transfer = true;
             }
         }
         if self.transfer_start_delay > 0 {
@@ -476,15 +513,24 @@ impl Dmc {
         }
     }
 
-    /// $4015 bit 4. `odd_cycle` selects the length of the start-up delay.
-    fn set_enabled(&mut self, enabled: bool, odd_cycle: bool) {
+    /// $4015 bit 4. Neither an enable nor a disable is felt where it lands:
+    /// the channel is only reached two or three cycles later, and which of
+    /// the two depends on the phase the write arrived on. `phase` says
+    /// whether that was a cycle a transfer could have read on, and those are
+    /// the writes that wait the longer time.
+    ///
+    /// The difference is a whole cycle of stall, because it decides which
+    /// phase the fetch this write provokes ends up halting on — and a fetch
+    /// that halts on a get cycle needs no alignment, so it runs three cycles
+    /// instead of four.
+    fn set_enabled(&mut self, enabled: bool, phase: Phase) {
         if !enabled {
             if self.disable_delay == 0 {
-                self.disable_delay = if odd_cycle { 3 } else { 2 };
+                self.disable_delay = if phase == Phase::Get { 3 } else { 2 };
             }
         } else if self.bytes_remaining == 0 {
             self.init_sample();
-            self.transfer_start_delay = if odd_cycle { 3 } else { 2 };
+            self.transfer_start_delay = if phase == Phase::Get { 3 } else { 2 };
         }
     }
 }
@@ -504,7 +550,14 @@ pub struct Apu {
     cycle: u64,
     /// Alternates every CPU cycle. Half the APU is clocked on one phase only,
     /// and several register writes behave differently depending on it.
-    half_cycle: bool,
+    /// Which half of the processor's clock the cycle now running falls on.
+    ///
+    /// The processor's divider is the APU's own, so this is not counted here
+    /// — the bus hands it over, and there is one divider in the machine
+    /// rather than two that can drift apart. Everything in here that cares
+    /// says so in the same terms the hardware documentation does: a get
+    /// cycle, a put cycle, or the edge between two of them.
+    phase: Phase,
 
     // ---- Frame sequencer ----
     /// Position within the six-entry step table.
@@ -518,6 +571,13 @@ pub struct Apu {
     /// the interrupt line: an inhibited sequencer still sets it briefly.
     frame_irq_flag: bool,
     frame_irq_line: bool,
+    /// A read of `$4015` has asked for the frame interrupt flag to go.
+    ///
+    /// The clear does not happen where the read does: it waits for the APU's
+    /// next get cycle. Two reads in a row therefore see the flag twice if the
+    /// first of them landed on a get — which is what `SLO $4015` arranges, and
+    /// how a program can tell the console's phase.
+    frame_irq_clearing: bool,
     /// A tick just occurred, so a `$4017` write must not produce another one
     /// on this cycle or the next.
     block_tick: u8,
@@ -533,6 +593,12 @@ pub struct Apu {
     sample_accum: f64,
     sample_step: f64,
     filter: OutputFilter,
+    /// The delay line the second channel reads from; see [`STEREO_DELAY_MS`].
+    ///
+    /// Not state, and skipped by a save state: at worst a few milliseconds of
+    /// sound is missing from the far channel after a load.
+    #[cfg_attr(feature = "snapshot", serde(skip))]
+    widen: Widen,
 }
 
 impl Apu {
@@ -550,20 +616,22 @@ impl Apu {
             dmc: Dmc::default(),
             tv,
             cycle: 0,
-            half_cycle: false,
+            phase: Phase::Put,
             step: 0,
             step_cycle: 0,
             step_mode: 0,
             inhibit_irq: false,
             frame_irq_flag: false,
             frame_irq_line: false,
+            frame_irq_clearing: false,
             block_tick: 0,
-            pending_4017: 0,
-            write_delay: 3,
+            pending_4017: -1,
+            write_delay: -1,
             samples: Vec::new(),
             sample_accum: 0.0,
             sample_step: SAMPLE_RATE as f64 / cpu_hz,
             filter: OutputFilter::new(SAMPLE_RATE),
+            widen: Widen::new(STEREO_DELAY_MS, SAMPLE_RATE),
         }
     }
 
@@ -585,15 +653,22 @@ impl Apu {
 
         self.frame_irq_flag = false;
         self.frame_irq_line = false;
+        self.frame_irq_clearing = false;
         self.inhibit_irq = false;
         self.step = 0;
+        // The sequencer is already running by the time the first instruction
+        // does: out of reset the APU behaves as though `$4017` had been
+        // written with `$00` some nine to twelve cycles beforehand, and a
+        // write takes three or four of those to reach the sequencer, so what
+        // is left over is spent before anything can observe it. Queueing the
+        // write here instead would start the count late, and blargg's
+        // `09.reset_timing` reports exactly that: fourth step too late.
         self.step_cycle = 0;
-        // Reset behaves as though $4017 were written with the mode already in
-        // effect, a few cycles before the first instruction runs.
-        self.pending_4017 = if self.step_mode == 1 { 0x80 } else { 0x00 };
-        self.write_delay = 3;
+        self.pending_4017 = -1;
+        self.write_delay = -1;
         self.block_tick = 0;
         self.filter.reset();
+        self.widen.reset();
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -604,13 +679,21 @@ impl Apu {
         self.frame_irq_line || self.dmc.irq_flag
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self, phase: Phase) {
         self.cycle += 1;
-        self.half_cycle = !self.half_cycle;
+        self.phase = phase;
+
+        // A read of `$4015` asked for the frame interrupt flag; it goes here,
+        // on the next get cycle, rather than where the read happened. Applied
+        // before the sequencer, so a cycle that is asserting the flag wins and
+        // a read taken during the assertion clears nothing.
+        if self.phase == Phase::Get && core::mem::take(&mut self.frame_irq_clearing) {
+            self.frame_irq_flag = false;
+        }
 
         // Pulse and noise timers are clocked every second CPU cycle; the
         // triangle and the DMC run at the full rate.
-        if self.half_cycle {
+        if self.phase == APU_CLOCK {
             self.pulse1.tick();
             self.pulse2.tick();
             self.noise.tick();
@@ -709,17 +792,26 @@ impl Apu {
         self.pulse2.clock_sweep();
     }
 
-    pub fn read_status(&mut self) -> u8 {
+    /// The status byte at `$4015`.
+    ///
+    /// `bus` is what the processor's own data bus is holding. Bit 5 has nothing
+    /// behind it — the register is only seven bits wide — so that bit floats
+    /// with the bus rather than reading as zero. The processor's bus, not the
+    /// external one: a transfer's read reaches that and not this.
+    pub fn read_status(&mut self, bus: u8) -> u8 {
         let bit = |set: bool, mask: u8| if set { mask } else { 0 };
         let status = bit(self.pulse1.length.active(), 0x01)
             | bit(self.pulse2.length.active(), 0x02)
             | bit(self.triangle.length.active(), 0x04)
             | bit(self.noise.length.active(), 0x08)
             | bit(self.dmc.bytes_remaining > 0, 0x10)
+            | (bus & 0x20)
             | bit(self.frame_irq_flag, 0x40)
             | bit(self.dmc.irq_flag, 0x80);
-        // Reading acknowledges the frame interrupt but not the DMC's.
-        self.frame_irq_flag = false;
+        // Reading acknowledges the frame interrupt but not the DMC's. The
+        // line drops at once, but the flag this register reports only goes on
+        // the next get cycle — see `frame_irq_clearing`.
+        self.frame_irq_clearing = true;
         self.frame_irq_line = false;
         status
     }
@@ -828,7 +920,7 @@ impl Apu {
                 self.pulse2.length.set_enabled(val & 0x02 != 0);
                 self.triangle.length.set_enabled(val & 0x04 != 0);
                 self.noise.length.set_enabled(val & 0x08 != 0);
-                self.dmc.set_enabled(val & 0x10 != 0, self.half_cycle);
+                self.dmc.set_enabled(val & 0x10 != 0, self.phase);
                 // Writing here always acknowledges the DMC interrupt.
                 self.dmc.irq_flag = false;
             }
@@ -836,7 +928,9 @@ impl Apu {
                 self.pending_4017 = val as i16;
                 // The write takes effect three CPU cycles later, or four if it
                 // landed between APU cycles rather than on one.
-                self.write_delay = if self.half_cycle { 4 } else { 3 };
+                // Felt three cycles on if the write landed on one of the
+                // APU's own cycles, four if it landed between two of them.
+                self.write_delay = if self.phase == APU_CLOCK { 3 } else { 4 };
                 self.inhibit_irq = val & 0x40 != 0;
                 if self.inhibit_irq {
                     self.frame_irq_flag = false;
@@ -851,6 +945,13 @@ impl Apu {
     pub(crate) fn take_dmc_request(&mut self) -> bool {
         core::mem::take(&mut self.dmc.wants_transfer)
     }
+
+    /// Whether a fetch in flight is to be given up, because the channel was
+    /// disabled while it was under way.
+    pub(crate) fn take_dmc_abort(&mut self) -> bool {
+        core::mem::take(&mut self.dmc.drops_transfer)
+    }
+
 
     pub(crate) fn dmc_read_address(&self) -> u16 {
         self.dmc.current_addr
@@ -871,6 +972,14 @@ impl Apu {
         self.samples.push(self.filter.apply(mixed));
     }
 
+    /// How much louder the DMC sits than the hardware notes put it.
+    ///
+    /// Those weigh it 1/22638 against the triangle's 1/8227 and the noise's
+    /// 1/12241, which is right and leaves the sampled drums and bass sitting
+    /// under the melodic channels. This is the one place the mix departs from
+    /// the notes, and it does so on purpose.
+    const DMC_LIFT: f32 = 1.3;
+
     /// The non-linear mixer, using the closed forms from the hardware notes
     /// rather than the lookup tables, which agree to within a sample step.
     fn mix(&self) -> f32 {
@@ -879,7 +988,7 @@ impl Apu {
 
         let t = self.triangle.output() as f32 / 8227.0;
         let n = self.noise.output() as f32 / 12241.0;
-        let d = self.dmc.output as f32 / 22638.0;
+        let d = self.dmc.output as f32 * Self::DMC_LIFT / 22638.0;
         let denom = t + n + d;
         let tnd = if denom == 0.0 { 0.0 } else { 159.79 / (1.0 / denom + 100.0) };
 
@@ -889,36 +998,109 @@ impl Apu {
     pub fn drain(&mut self, out: &mut Vec<f32>) {
         out.append(&mut self.samples);
     }
+
+    /// Drain as interleaved stereo pairs, the second channel delayed.
+    ///
+    /// Two values per sample, left then right. The mono [`Apu::drain`] is
+    /// untouched, so a front end that wants one channel keeps getting one.
+    pub fn drain_stereo(&mut self, out: &mut Vec<f32>) {
+        out.reserve(self.samples.len() * 2);
+        for sample in self.samples.drain(..) {
+            let (left, right) = self.widen.apply(sample);
+            out.push(left);
+            out.push(right);
+        }
+    }
+
+    /// How far the second channel lags, in milliseconds. Zero for mono.
+    pub fn set_stereo_delay(&mut self, ms: f32) {
+        self.widen = Widen::new(ms, SAMPLE_RATE);
+    }
+
+    /// The delay currently in use, in milliseconds.
+    pub fn stereo_delay(&self) -> f32 {
+        self.widen.ms
+    }
 }
 
-/// The analogue stage. Both halves of the mixer are unsigned, so its output
-/// carries a standing DC offset that these filters remove.
+/// The analogue stage: a high-pass, and nothing else.
+///
+/// Both halves of the mixer are unsigned, so its output carries a standing DC
+/// offset, and that is all this is here to remove.
+///
+/// The hardware had two more stages and neither is kept. A high-pass at
+/// 440 Hz took 23.8 dB out at 55 Hz and 18.2 dB at 82 Hz — the whole range
+/// the triangle plays bass lines in, so a cartridge did not sound the way it
+/// was written. A low-pass at 14 kHz cost 1.2 dB at 8 kHz and 1.8 dB at
+/// 10 kHz, which is the range that tells one voice from another. Both are
+/// what a television of the day did to the sound; neither is what anybody
+/// wants to hear it through now.
 #[derive(Clone, Default)]
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 struct OutputFilter {
     high1: HighPass,
-    high2: HighPass,
-    low: LowPass,
 }
 
 impl OutputFilter {
     fn new(sample_rate: u32) -> Self {
         OutputFilter {
             high1: HighPass::new(90.0, sample_rate),
-            high2: HighPass::new(440.0, sample_rate),
-            low: LowPass::new(14_000.0, sample_rate),
         }
     }
 
     fn apply(&mut self, sample: f32) -> f32 {
-        let out = self.low.apply(self.high2.apply(self.high1.apply(sample)));
-        out.clamp(-1.0, 1.0)
+        self.high1.apply(sample).clamp(-1.0, 1.0)
     }
 
     fn reset(&mut self) {
         self.high1.reset();
-        self.high2.reset();
-        self.low.reset();
+    }
+}
+
+/// Turns the console's one channel into two by holding one of them back.
+///
+/// A plain delay of a few milliseconds, which is all the effect needs.
+#[derive(Clone)]
+#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
+struct Widen {
+    line: Vec<f32>,
+    at: usize,
+    ms: f32,
+}
+
+impl Default for Widen {
+    fn default() -> Self {
+        Widen::new(STEREO_DELAY_MS, SAMPLE_RATE)
+    }
+}
+
+impl Widen {
+    fn new(ms: f32, sample_rate: u32) -> Self {
+        let ms = ms.clamp(0.0, STEREO_DELAY_MAX_MS);
+        let lag = (ms * sample_rate as f32 / 1000.0) as usize;
+        Widen {
+            line: alloc::vec![0.0; lag],
+            at: 0,
+            ms,
+        }
+    }
+
+    /// One mono sample in, a left and a right out.
+    fn apply(&mut self, sample: f32) -> (f32, f32) {
+        if self.line.is_empty() {
+            return (sample, sample);
+        }
+        // Read before writing: what is under the index is the sample from a
+        // whole line-length ago.
+        let delayed = self.line[self.at];
+        self.line[self.at] = sample;
+        self.at = (self.at + 1) % self.line.len();
+        (sample, delayed)
+    }
+
+    fn reset(&mut self) {
+        self.line.iter_mut().for_each(|s| *s = 0.0);
+        self.at = 0;
     }
 }
 
@@ -951,39 +1133,15 @@ impl HighPass {
     }
 }
 
-/// A one-pole low-pass: `y += b * (x - y)`.
-#[derive(Clone, Default)]
-#[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
-struct LowPass {
-    b: f32,
-    prev_out: f32,
-}
-
-impl LowPass {
-    fn new(cutoff: f32, sample_rate: u32) -> Self {
-        let rc = 1.0 / (core::f32::consts::TAU * cutoff);
-        let dt = 1.0 / sample_rate as f32;
-        LowPass { b: dt / (rc + dt), prev_out: 0.0 }
-    }
-
-    fn apply(&mut self, sample: f32) -> f32 {
-        self.prev_out += self.b * (sample - self.prev_out);
-        self.prev_out
-    }
-
-    fn reset(&mut self) {
-        self.prev_out = 0.0;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Run the APU for a number of CPU cycles.
+    /// Run the APU for a number of CPU cycles, alternating the bus phase the
+    /// way the bus does.
     fn run(apu: &mut Apu, cycles: u32) {
-        for _ in 0..cycles {
-            apu.tick();
+        for i in 0..cycles {
+            apu.tick(if i % 2 == 0 { Phase::Get } else { Phase::Put });
         }
     }
 
@@ -1019,7 +1177,7 @@ mod tests {
         run(&mut apu, 29830 * 2);
 
         assert_eq!(
-            apu.read_status() & 0x0f,
+            apu.read_status(0) & 0x0f,
             0x04,
             "only the triangle should still be counting after reset"
         );
@@ -1038,7 +1196,7 @@ mod tests {
         // Halt, then run past the first half-frame clock at cycle 14913.
         apu.write_register(0x4000, 0x20);
         run(&mut apu, 29830);
-        assert_ne!(apu.read_status() & 0x01, 0, "a halted counter must not reach zero");
+        assert_ne!(apu.read_status(0) & 0x01, 0, "a halted counter must not reach zero");
     }
 
     /// A length written while the counter is being clocked is discarded.
@@ -1054,6 +1212,6 @@ mod tests {
         run(&mut apu, 1);
         // The counter moved between the write and the reload, so the reload
         // is dropped and the count stays where the clock left it.
-        assert_eq!(apu.read_status() & 0x01, 1);
+        assert_eq!(apu.read_status(0) & 0x01, 1);
     }
 }

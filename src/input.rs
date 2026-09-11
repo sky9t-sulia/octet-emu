@@ -63,10 +63,14 @@ impl Controller {
     }
 
     pub fn read(&mut self) -> u8 {
-        // While the strobe is high the pad reloads continuously, so every read
-        // returns the A button.
+        // While the strobe is high the pad's register is being reloaded every
+        // moment, so a read cannot move it along: it reports the first button
+        // and leaves the register holding whatever is held down now. Clocking
+        // it here would leave the register one place along when the strobe
+        // dropped, and the first real read would answer with B.
         if self.strobing {
             self.shift = self.state;
+            return self.state & 1;
         }
         let bit = self.shift & 1;
         // Shifting in ones makes reads past the eighth return 1, as the real
