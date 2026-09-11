@@ -121,6 +121,10 @@ struct Bus {
     /// Bit 5 of `$4015` has no flag behind it and reports this.
     internal_bus: u8,
 
+    /// Whether the cartridge wants a call every processor cycle. Asked once,
+    /// when it is opened; four mappers of fifteen say yes.
+    mapper_ticks_cpu: bool,
+
     // ---- DMA unit. Two requesters, one bus: see `dma_step`.
     /// The sprite transfer and the DMC's fetch, each at whatever cycle it is
     /// up to. Both can be in flight at once, which is the whole difficulty.
@@ -160,6 +164,7 @@ impl Nes {
         let mapper = mapper::create(cart)?;
         let watches_bus = mapper.watches_ppu_bus();
         let serves_nametables = mapper.serves_nametables();
+        let ticks_cpu = mapper.ticks_cpu();
         let mut nes = Nes {
             cpu: Cpu::new(),
             bus: Bus {
@@ -172,6 +177,7 @@ impl Nes {
                 controllers: [Controller::new(), Controller::new()],
                 open_bus: 0,
                 internal_bus: 0,
+                mapper_ticks_cpu: false,
                 oam: Oam::Idle,
                 dmc: Dmc::Idle,
                 strobe_pending: None,
@@ -188,6 +194,7 @@ impl Nes {
             },
         };
         nes.bus.ppu.set_mapper_interest(watches_bus, serves_nametables);
+        nes.bus.mapper_ticks_cpu = ticks_cpu;
         nes.reset();
         Ok(nes)
     }
@@ -527,7 +534,9 @@ impl Bus {
                 self.controllers[1].strobe(val);
             }
         }
-        self.mapper.tick_cpu();
+        if self.mapper_ticks_cpu {
+            self.mapper.tick_cpu();
+        }
     }
 
     /// Dots that elapse after it, completing the cycle.

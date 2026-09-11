@@ -426,6 +426,10 @@ impl Mapper for Mmc5 {
         }
     }
 
+    fn ticks_cpu(&self) -> bool {
+        true
+    }
+
     fn tick_cpu(&mut self) {
         // Three CPU cycles without a PPU read means rendering has stopped,
         // which is how the chip knows the frame ended.

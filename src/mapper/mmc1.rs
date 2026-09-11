@@ -153,6 +153,10 @@ impl Mapper for Mmc1 {
         self.mirroring_bits()
     }
 
+    fn ticks_cpu(&self) -> bool {
+        true
+    }
+
     fn tick_cpu(&mut self) {
         self.cycle += 1;
     }

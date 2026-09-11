@@ -150,6 +150,10 @@ impl Mapper for Fme7 {
         self.irq_line
     }
 
+    fn ticks_cpu(&self) -> bool {
+        true
+    }
+
     fn tick_cpu(&mut self) {
         if !self.irq_counting {
             return;

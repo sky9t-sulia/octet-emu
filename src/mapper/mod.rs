@@ -78,6 +78,12 @@ pub trait Mapper: Send {
         false
     }
 
+    /// Whether this mapper wants [`Mapper::tick_cpu`] at all. Asked once, when
+    /// the cartridge is opened.
+    fn ticks_cpu(&self) -> bool {
+        false
+    }
+
     /// Called once per CPU cycle, for mappers whose IRQ counters run off the
     /// CPU clock (MMC5, the VRC family, FME-7).
     fn tick_cpu(&mut self) {}

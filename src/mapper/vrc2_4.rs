@@ -277,6 +277,10 @@ impl Mapper for Vrc2_4 {
         self.mirroring
     }
 
+    fn ticks_cpu(&self) -> bool {
+        true
+    }
+
     fn tick_cpu(&mut self) {
         // Only VRC4 has this counter, but running it when the variant is a
         // guess is harmless: unwritten control registers never fire.
