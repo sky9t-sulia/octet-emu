@@ -363,6 +363,14 @@ impl Mapper for Mmc5 {
     }
 
     #[rustfmt::skip]
+    fn watches_ppu_bus(&self) -> bool {
+        true
+    }
+
+    fn serves_nametables(&self) -> bool {
+        true
+    }
+
     fn read_nametable(&mut self, addr: u16) -> Option<u8> {
         let slot = ((addr >> 10) & 3) as usize;
         let offset = (addr & 0x3ff) as usize;

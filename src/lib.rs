@@ -158,6 +158,8 @@ impl Nes {
         #[cfg(feature = "snapshot")]
         let cart_id = fingerprint(&cart);
         let mapper = mapper::create(cart)?;
+        let watches_bus = mapper.watches_ppu_bus();
+        let serves_nametables = mapper.serves_nametables();
         let mut nes = Nes {
             cpu: Cpu::new(),
             bus: Bus {
@@ -185,6 +187,7 @@ impl Nes {
                 cart_id,
             },
         };
+        nes.bus.ppu.set_mapper_interest(watches_bus, serves_nametables);
         nes.reset();
         Ok(nes)
     }

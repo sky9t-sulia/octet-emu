@@ -156,7 +156,11 @@ pub struct Ppu {
     /// Whether each counter is counting rather than halted. A halted sprite is
     /// one being drawn; the end of a line sets them all counting again, but
     /// only if rendering is on to do it.
-    sprite_counting: [bool; 8],
+    sprite_counting: u8,
+    /// Which sprites are being drawn *and* still have something to draw. Kept
+    /// beside the counters so the drawing can skip the eight of them in one
+    /// test, which on most dots it can.
+    sprite_live: u8,
     /// The three bytes of a sprite the fetch reads before its pattern.
     sprite_y: [u8; 8],
     sprite_tile: [u8; 8],
@@ -230,6 +234,12 @@ pub struct Ppu {
     /// Steps still owed to the ninth sprite: having found it, the unit reads
     /// the rest of it out before giving up on the line entirely.
     eval_extra: u8,
+
+    /// What the cartridge wants from the PPU's bus, asked once when it is
+    /// opened. Almost every mapper wants nothing, and then the drawing never
+    /// calls into it at all.
+    mapper_watches_bus: bool,
+    mapper_serves_nametables: bool,
 
     /// Value last seen on the PPU's own data bus, returned by write-only reads.
     open_bus: u8,
@@ -306,7 +316,8 @@ impl Ppu {
             eval_m: 0,
             eval_done: true,
             sprite_counter: [0; 8],
-            sprite_counting: [true; 8],
+            sprite_counting: 0xff,
+            sprite_live: 0,
             sprite_y: [0; 8],
             sprite_tile: [0; 8],
             sprite_attr: [0; 8],
@@ -332,6 +343,8 @@ impl Ppu {
             eval_overflow_pending: false,
             eval_extra: 0,
             nmi_output: false,
+            mapper_watches_bus: false,
+            mapper_serves_nametables: false,
             open_bus: 0,
             open_bus_frame: 0,
             color_ids: Box::new([0; FRAME_WIDTH * FRAME_HEIGHT]),
@@ -361,6 +374,12 @@ impl Ppu {
 
     /// The `/NMI` line: a level held while vblank and the enable bit coincide,
     /// so toggling `$2000` during vblank can fire a second interrupt.
+    /// Told once, when the cartridge is opened.
+    pub fn set_mapper_interest(&mut self, watches_bus: bool, serves_nametables: bool) {
+        self.mapper_watches_bus = watches_bus;
+        self.mapper_serves_nametables = serves_nametables;
+    }
+
     pub fn nmi_line(&self) -> bool {
         self.nmi_output && (self.status & 0x80 != 0)
     }

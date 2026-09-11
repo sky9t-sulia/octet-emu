@@ -103,7 +103,8 @@ impl Ppu {
                 // it is not, a sprite that was being drawn stays that way, and
                 // is drawn again from wherever rendering resumes.
                 if self.dot == 339 {
-                    self.sprite_counting = [true; 8];
+                    self.sprite_counting = 0xff;
+                    self.sprite_live = 0;
                 }
             }
 
@@ -182,7 +183,9 @@ impl Ppu {
             }
         }
 
-        mapper.tick_ppu_addr(self.bus_addr);
+        if self.mapper_watches_bus {
+            mapper.tick_ppu_addr(self.bus_addr);
+        }
         self.advance_dot();
     }
 

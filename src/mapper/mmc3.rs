@@ -268,6 +268,10 @@ impl Mapper for Mmc3 {
         None
     }
 
+    fn watches_ppu_bus(&self) -> bool {
+        true
+    }
+
     fn tick_ppu_addr(&mut self, addr: u16) {
         let a12 = addr & 0x1000 != 0;
         if !a12 {

@@ -82,6 +82,18 @@ pub trait Mapper: Send {
     /// CPU clock (MMC5, the VRC family, FME-7).
     fn tick_cpu(&mut self) {}
 
+    /// Whether this mapper listens to the PPU's own bus at all — the two
+    /// calls below. Most do not, and the PPU is told so once when the
+    /// cartridge is opened rather than asked a call a dot.
+    fn watches_ppu_bus(&self) -> bool {
+        false
+    }
+
+    /// Whether it answers for any of `$2000..=$3EFF` itself.
+    fn serves_nametables(&self) -> bool {
+        false
+    }
+
     /// Called once per PPU dot with whatever address the PPU bus is holding,
     /// so A12-edge counters (MMC3) can measure how long the line stayed low.
     fn tick_ppu_addr(&mut self, _addr: u16) {}

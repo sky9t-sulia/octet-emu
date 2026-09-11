@@ -271,13 +271,17 @@ impl Ppu {
     fn read_vram_raw(&mut self, addr: u16, mapper: &mut dyn Mapper) -> u8 {
         let addr = addr & 0x3fff;
         self.bus_addr = addr;
-        mapper.ppu_bus_read(addr);
+        if self.mapper_watches_bus {
+            mapper.ppu_bus_read(addr);
+        }
         match addr {
             0x0000..=0x1fff => mapper.ppu_read(addr),
             0x2000..=0x3eff => {
                 let addr = 0x2000 | (addr & 0x0fff);
-                if let Some(val) = mapper.read_nametable(addr) {
-                    return val;
+                if self.mapper_serves_nametables {
+                    if let Some(val) = mapper.read_nametable(addr) {
+                        return val;
+                    }
                 }
                 self.vram[self.nametable_index(addr, mapper.mirroring())]
             }
@@ -292,7 +296,7 @@ impl Ppu {
             0x0000..=0x1fff => mapper.ppu_write(addr, val),
             0x2000..=0x3eff => {
                 let addr = 0x2000 | (addr & 0x0fff);
-                if mapper.write_nametable(addr, val) {
+                if self.mapper_serves_nametables && mapper.write_nametable(addr, val) {
                     return;
                 }
                 let idx = self.nametable_index(addr, mapper.mirroring());

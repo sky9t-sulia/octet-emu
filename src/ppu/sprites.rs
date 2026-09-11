@@ -257,16 +257,35 @@ impl Ppu {
         }
     }
 
+    /// Keep the drawn-and-not-empty mask true after a pattern is loaded into a
+    /// sprite that is already past its counter.
+    fn note_sprite_pattern(&mut self, i: usize) {
+        let bit = 1 << i;
+        let live = self.sprite_counting & bit == 0 && self.sprite_lo[i] | self.sprite_hi[i] != 0;
+        if live {
+            self.sprite_live |= bit;
+        } else {
+            self.sprite_live &= !bit;
+        }
+    }
+
     /// One dot of the eight shifter counters. A counter that has run out puts
     /// its sprite into the halted state, which is where it is drawn; until
     /// then it only counts, and forced blank does not stop it counting.
     pub(super) fn step_sprite_counters(&mut self) {
+        if self.sprite_counting == 0 {
+            return;
+        }
         for i in 0..8 {
-            if !self.sprite_counting[i] {
+            let bit = 1 << i;
+            if self.sprite_counting & bit == 0 {
                 continue;
             }
             if self.sprite_counter[i] == 0 {
-                self.sprite_counting[i] = false;
+                self.sprite_counting &= !bit;
+                if self.sprite_lo[i] | self.sprite_hi[i] != 0 {
+                    self.sprite_live |= bit;
+                }
             } else {
                 self.sprite_counter[i] -= 1;
             }
@@ -277,10 +296,18 @@ impl Ppu {
     /// Nothing shifts in behind them, so a sprite runs out after its eight
     /// pixels instead of repeating — and stops where it is if rendering does.
     pub(super) fn shift_sprites(&mut self) {
+        if self.sprite_live == 0 {
+            return;
+        }
         for i in 0..8 {
-            if !self.sprite_counting[i] {
-                self.sprite_lo[i] <<= 1;
-                self.sprite_hi[i] <<= 1;
+            let bit = 1 << i;
+            if self.sprite_live & bit == 0 {
+                continue;
+            }
+            self.sprite_lo[i] <<= 1;
+            self.sprite_hi[i] <<= 1;
+            if self.sprite_lo[i] | self.sprite_hi[i] == 0 {
+                self.sprite_live &= !bit;
             }
         }
     }
@@ -326,6 +353,7 @@ impl Ppu {
                 // the read is out on the bus and mappers count it — but what
                 // reaches the shifter is nothing at all.
                 self.sprite_lo[i] = if self.sprite_in_range(i) { lo } else { 0 };
+                self.note_sprite_pattern(i);
             }
             6 => {
                 self.sprite_counter[i] = self.oam2_peek();
@@ -335,6 +363,7 @@ impl Ppu {
                     hi = hi.reverse_bits();
                 }
                 self.sprite_hi[i] = if self.sprite_in_range(i) { hi } else { 0 };
+                self.note_sprite_pattern(i);
             }
             7 => self.sprite_counter[i] = self.oam2_read(),
             _ => {}

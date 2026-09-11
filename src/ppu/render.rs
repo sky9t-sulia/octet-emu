@@ -33,9 +33,12 @@ impl Ppu {
         if self.mask & 0x10 == 0 {
             return (0, false, false);
         }
+        if self.sprite_live == 0 {
+            return (0, false, false); // nothing has reached its first pixel
+        }
         for i in 0..8 {
-            if self.sprite_counting[i] {
-                continue; // still counting down to its first pixel
+            if self.sprite_live & (1 << i) == 0 {
+                continue; // still counting down, or already drawn out
             }
             let lo = (self.sprite_lo[i] >> 7) & 1;
             let hi = (self.sprite_hi[i] >> 7) & 1;
