@@ -3,7 +3,7 @@
 //! It is less a mapper than a coprocessor: four PRG windows that can each be
 //! ROM or RAM, two independent CHR bank sets swapped automatically between
 //! background and sprite fetches, a kilobyte of expansion RAM usable as a
-//! nametable, programmable fill-mode tiles, an 8x8 multiplier and a scanline
+//! nametable, programmable fill-mode tiles, a 8x8 multiplier and a scanline
 //! counter.
 //!
 //! The scanline counter is the subtle part. The MMC5 has no connection to the
@@ -255,6 +255,14 @@ impl Mapper for Mmc5 {
     #[cfg(feature = "snapshot")]
     super::state_via_serde!();
 
+    fn cpu_read(&mut self, addr: u16) -> Option<u8> {
+        let val = self.cpu_peek(addr);
+        if addr == 0x5204 {
+            self.irq_pending = false;
+        }
+        val
+    }
+
     fn cpu_peek(&self, addr: u16) -> Option<u8> {
         match addr {
             // Expansion RAM is only readable in modes 2 and 3.
@@ -283,14 +291,6 @@ impl Mapper for Mmc5 {
         }
     }
 
-    fn cpu_read(&mut self, addr: u16) -> Option<u8> {
-        let val = self.cpu_peek(addr);
-        if addr == 0x5204 {
-            self.irq_pending = false;
-        }
-        val
-    }
-
     fn cpu_write(&mut self, addr: u16, val: u8) {
         match addr {
             0x5100 => {
@@ -313,7 +313,7 @@ impl Mapper for Mmc5 {
             0x5105 => self.nametable_mapping = val,
             0x5106 => self.fill_tile = val,
             0x5107 => {
-                // The fill-mode colour is repeated across all four corners of
+                // The fill-mode color is repeated across all four corners of
                 // the attribute byte.
                 let c = val & 0x03;
                 self.fill_attr = c | (c << 2) | (c << 4) | (c << 6);
@@ -362,15 +362,6 @@ impl Mapper for Mmc5 {
         Mirroring::Horizontal
     }
 
-    #[rustfmt::skip]
-    fn watches_ppu_bus(&self) -> bool {
-        true
-    }
-
-    fn serves_nametables(&self) -> bool {
-        true
-    }
-
     fn read_nametable(&mut self, addr: u16) -> Option<u8> {
         let slot = ((addr >> 10) & 3) as usize;
         let offset = (addr & 0x3ff) as usize;
@@ -400,6 +391,35 @@ impl Mapper for Mmc5 {
         true
     }
 
+    fn irq(&self) -> bool {
+        self.irq_pending && self.irq_enabled
+    }
+
+    fn ticks_cpu(&self) -> bool {
+        true
+    }
+
+    fn tick_cpu(&mut self) {
+        // Three CPU cycles without a PPU read means rendering has stopped,
+        // which is how the chip knows the frame ended.
+        if self.ppu_idle_counter > 0 {
+            self.ppu_idle_counter -= 1;
+            if self.ppu_idle_counter == 0 {
+                self.ppu_in_frame = false;
+                self.update_chr(true);
+            }
+        }
+    }
+
+    #[rustfmt::skip]
+    fn watches_ppu_bus(&self) -> bool {
+        true
+    }
+
+    fn serves_nametables(&self) -> bool {
+        true
+    }
+
     fn ppu_bus_read(&mut self, addr: u16) {
         let is_nt_fetch = (0x2000..0x3000).contains(&addr) && (addr & 0x3ff) < 0x3c0;
         if is_nt_fetch {
@@ -424,26 +444,6 @@ impl Mapper for Mmc5 {
         } else if addr == 0x2001 {
             self.rendering_enabled = val & 0x18 != 0;
         }
-    }
-
-    fn ticks_cpu(&self) -> bool {
-        true
-    }
-
-    fn tick_cpu(&mut self) {
-        // Three CPU cycles without a PPU read means rendering has stopped,
-        // which is how the chip knows the frame ended.
-        if self.ppu_idle_counter > 0 {
-            self.ppu_idle_counter -= 1;
-            if self.ppu_idle_counter == 0 {
-                self.ppu_in_frame = false;
-                self.update_chr(true);
-            }
-        }
-    }
-
-    fn irq(&self) -> bool {
-        self.irq_pending && self.irq_enabled
     }
 
     fn nvram(&self) -> &[u8] {

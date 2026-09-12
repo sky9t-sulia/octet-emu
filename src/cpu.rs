@@ -57,7 +57,7 @@ pub struct Cpu {
     pub pc: u16,
 
     /// `/NMI` is edge-sensitive: once latched the request survives until it
-    /// is serviced, whatever the line does afterwards.
+    /// is serviced, whatever the line does afterward.
     need_nmi: bool,
     prev_need_nmi: bool,
     prev_nmi_flag: bool,
@@ -127,12 +127,12 @@ impl Cpu {
         self.set_flag(N, val & 0x80 != 0);
     }
 
-    // ---- Bus access: every access polls the interrupt lines afterwards, so
+    // ---- Bus access: every access polls the interrupt lines afterward, so
     // `prev_run_irq` lags one cycle behind when an instruction ends.
 
     #[inline]
     fn read(&mut self, bus: &mut impl CpuBus, addr: u16) -> u8 {
-        // A DMA can only halt a read; a write already drives the bus. The CPU
+        // A DMA can only halt a read; a 'write' already drives the bus. The CPU
         // keeps polling while halted, so step a cycle at a time.
         self.held_off = false;
         while bus.dma_pending() {

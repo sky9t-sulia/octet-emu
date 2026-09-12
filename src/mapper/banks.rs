@@ -1,7 +1,7 @@
 //! Shared PRG/CHR window mapping.
 //!
 //! Almost every mapper is the same machine: four 8 KiB PRG windows over
-//! `$8000..=$FFFF`, eight 1 KiB CHR windows over `$0000..=$1FFF`, and some
+//! `$8000...=$FFFF`, eight 1 KiB CHR windows over `$0000...=$1FFF`, and some
 //! mapper-specific register decoding that moves them. `Banks` owns the ROM,
 //! the RAM and the window table so each mapper only has to write the decoder.
 
@@ -33,7 +33,7 @@ pub struct Banks {
     /// `$8000`, `$A000`, `$C000`, `$E000`.
     prg_off: [usize; 4],
     prg_kind: [PrgKind; 4],
-    /// Byte offset for each 1 KiB PPU window across `$0000..=$1FFF`.
+    /// Byte offset for each 1 KiB PPU window across `$0000...=$1FFF`.
     chr_off: [usize; 8],
     /// Windows the mapper has marked read-only even though CHR RAM backs them.
     chr_ro: [bool; 8],
@@ -86,7 +86,7 @@ impl Banks {
 
     // ---- PRG ------------------------------------------------------------
 
-    /// Map one 8 KiB PRG ROM window. `slot` is 0..=3 (`$8000` + slot * 8 KiB);
+    /// Map one 8 KiB PRG ROM window. `slot` is 0...=3 (`$8000` + slot * 8 KiB);
     /// `bank` counts 8 KiB units and wraps, negative counting from the end.
     pub fn map_prg_8k(&mut self, slot: usize, bank: isize) {
         let count = (self.prg_rom.len() / 8192).max(1);
@@ -224,7 +224,7 @@ impl Banks {
     }
 }
 
-/// Reduce a possibly-negative bank index into `0..count`, where -1 is the last.
+/// Reduce a possibly-negative bank index into `0...count`, where -1 is the last.
 fn wrap_bank(bank: isize, count: usize) -> usize {
     let count = count as isize;
     (((bank % count) + count) % count) as usize

@@ -1,4 +1,4 @@
-//! Sprite evaluation: which of the next scanline's sprites make the cut, two per dot.
+//! Sprite evaluation: which of the next Scanline's sprites make the cut, two per dot.
 
 use super::*;
 
@@ -92,7 +92,7 @@ impl Ppu {
         }
     }
 
-    /// The write half, on the even dots: the byte in hand goes to secondary
+    /// The 'write' half, on the even dots: the byte in hand goes to secondary
     /// OAM, and evaluation decides where to look next.
     ///
     /// When the unit is not allowed to write — secondary OAM full, or every
@@ -109,7 +109,7 @@ impl Ppu {
         if self.oam2_full || self.eval_done {
             self.oam_buffer = self.secondary_oam[slot];
         } else {
-            // The Y goes in wherever the address points whether or not the
+            // The Y goes in wherever the address points whether the
             // sprite is wanted; only a wanted one moves the address on, so the
             // next sprite's Y lands on top of a rejected one.
             self.secondary_oam[slot] = self.oam_buffer;
@@ -203,7 +203,7 @@ impl Ppu {
         self.oam_buffer
     }
 
-    /// The same, and then the address moves on. An address something has
+    /// The same as oam2_peek but then the address moves on. An address something has
     /// pinned gives the same byte every time.
     fn oam2_read(&mut self) -> u8 {
         let val = self.oam2_peek();

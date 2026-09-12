@@ -48,7 +48,7 @@ impl Ppu {
         }
 
         // The shifter counters run on every dot a pixel could come out of,
-        // whether or not one does: forced blank stops the shifting below, and
+        // whether one does: forced blank stops the shifting below, and
         // the fetch that reloads them, but never the counting.
         if self.dot >= 1 && self.dot <= 256 {
             self.step_sprite_counters();
@@ -76,7 +76,7 @@ impl Ppu {
                 self.oam2_full = false;
             }
             // The address itself goes back to the start of secondary OAM as
-            // each stage hands over to the next — the last of which is the
+            // each stage -- hands over to the next — the last of which is the
             // fetch, which therefore starts reading at the first sprite.
             if matches!(self.dot, 63 | 257 | 339) {
                 self.oam2_addr = 0;
@@ -192,7 +192,7 @@ impl Ppu {
     fn advance_dot(&mut self) {
         self.dot += 1;
         // On odd frames with rendering enabled, the pre-render line is one dot
-        // short, which is what keeps the NTSC colour phase alternating.
+        // short, which is what keeps the NTSC color phase alternating.
         let line_length = if self.scanline == -1
             && self.odd_frame
             && self.rendering()

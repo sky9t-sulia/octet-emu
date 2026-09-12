@@ -1,5 +1,5 @@
 //! Mapper 34 — BNROM and NINA-001, two unrelated boards the iNES format
-//! cannot tell apart. NINA-001 decodes registers in the $7FFD..=$7FFF window
+//! cannot tell apart. NINA-001 decodes registers in the $7FFD...=$7FFF window
 //! and has CHR banking; BNROM has neither, so the presence of CHR ROM is used
 //! to decide which board this is.
 

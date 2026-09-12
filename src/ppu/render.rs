@@ -3,7 +3,7 @@
 use super::*;
 
 impl Ppu {
-    /// Colour index of the background at the current dot, and whether it is
+    /// Color index of the background at the current dot, and whether it is
     /// opaque (a pattern value of zero is transparent regardless of palette).
     fn background_pixel(&self) -> (u8, bool) {
         if self.mask & 0x08 == 0 {
@@ -23,7 +23,7 @@ impl Ppu {
         (palette * 4 + pattern, true)
     }
 
-    /// Colour index of the frontmost opaque sprite at this dot, whether it
+    /// Color index of the frontmost opaque sprite at this dot, whether it
     /// draws behind the background, and whether it is sprite zero.
     ///
     /// Which sprites are over this dot is not a question of where they are:
@@ -84,7 +84,7 @@ impl Ppu {
         };
 
         // `read_palette` has already folded in greyscale, so this is the
-        // colour as the PPU would emit it, with the emphasis bits above.
+        // color as the PPU would emit it, with the emphasis bits above.
         let color = self.read_palette(0x3f00 + index as u16) as usize & 0x3f;
         let emphasis = self.mask >> 5;
         self.color_ids[y as usize * FRAME_WIDTH + x as usize] =
@@ -92,7 +92,7 @@ impl Ppu {
     }
 }
 
-/// Apply the `$2001` colour emphasis bits: each set bit attenuates the other
+/// Apply the `$2001` color emphasis bits: each set bit attenuates the other
 /// two channels by roughly 20%.
 pub(super) fn emphasize(rgb: u32, bits: u8) -> u32 {
     let (r, g, b) = ((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);

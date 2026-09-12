@@ -134,10 +134,10 @@ struct Bus {
     sprite_dma_page: u8,
     /// Byte read on a get cycle, written to $2004 on the following put cycle.
     dma_latch: u8,
-    /// A write to `$4016` waiting for the phase that acts on it.
+    /// A 'write' to `$4016` waiting for the phase that acts on it.
     ///
-    /// The strobe does not land where the write happens: it waits for the edge
-    /// out of a get cycle, so a write on the wrong phase takes a cycle longer
+    /// The strobe does not land where the 'write' happens: it waits for the edge
+    /// out of a get cycle, so a 'write' on the wrong phase takes a cycle longer
     /// to reach the pads than one on the right phase.
     strobe_pending: Option<u8>,
     /// The port last read through $4016/$4017, when, and what it gave.
@@ -241,7 +241,7 @@ impl Nes {
         Some(needed)
     }
 
-    /// The completed frame as the PPU's own colour identities: the six-bit
+    /// The completed frame as the PPU's own color identities: the six-bit
     /// palette entry in the low bits, the three emphasis bits above it.
     ///
     /// The same picture [`Nes::framebuffer`] gives, in the form the hardware
@@ -252,8 +252,8 @@ impl Nes {
     }
 
     /// Drain the audio produced since the last call, as mono samples in
-    /// `-1.0..=1.0` at the rate reported by [`Nes::sample_rate`].
-    pub fn drain_audio(&mut self, out: &mut alloc::vec::Vec<f32>) {
+    /// `-1.0...=1.0` at the rate reported by [`Nes::sample_rate`].
+    pub fn drain_audio(&mut self, out: &mut Vec<f32>) {
         self.bus.apu.drain(out);
     }
 
@@ -263,7 +263,7 @@ impl Nes {
     /// The console is mono, so the second channel is made rather than
     /// emulated: see [`apu::STEREO_DELAY_MS`]. [`Nes::drain_audio`] still
     /// gives the one channel the hardware actually produced.
-    pub fn drain_audio_stereo(&mut self, out: &mut alloc::vec::Vec<f32>) {
+    pub fn drain_audio_stereo(&mut self, out: &mut Vec<f32>) {
         self.bus.apu.drain_stereo(out);
     }
 
@@ -317,8 +317,8 @@ impl Nes {
     /// The cartridge's ROM is not in it: that is on the cartridge, and a save
     /// state is only what changed since it was plugged in.
     #[cfg(feature = "snapshot")]
-    pub fn save_state(&self) -> alloc::vec::Vec<u8> {
-        let mut out = alloc::vec::Vec::new();
+    pub fn save_state(&self) -> Vec<u8> {
+        let mut out = Vec::new();
         out.extend_from_slice(&SNAPSHOT_MAGIC);
         out.push(SNAPSHOT_VERSION);
         out.extend_from_slice(&self.bus.cart_id.to_le_bytes());
@@ -359,7 +359,7 @@ impl Nes {
         }
         let board = core::mem::replace(
             &mut self.bus.mapper,
-            alloc::boxed::Box::new(snapshot::Pending(alloc::vec::Vec::new())),
+            Box::new(snapshot::Pending(Vec::new())),
         );
         loaded.bus.mapper = board;
         // The fingerprint is named in the header rather than the body, so it
@@ -415,7 +415,7 @@ enum Oam {
     /// costs five other tests. The two want the phase itself corrected, not
     /// the halt moved, and that reaches further than this enum.
     Queued,
-    /// Waiting to take the bus off the processor. A write already drives the
+    /// Waiting to take the bus off the processor. A 'write' already drives the
     /// bus, so a halt landing on one waits for the processor to read.
     Asked,
     /// The halt is spent. Waiting for a get cycle to start moving on.
@@ -511,7 +511,7 @@ impl Bus {
         // that the one divider in here is the one everything reads.
         self.apu.tick(Self::phase(self.cycle_count));
         // The DMC asks for a byte. Its halt and dummy cycles always happen,
-        // whether or not the sprite transfer is already running: see
+        // whether the sprite transfer is already running: see
         // `dma_step` for who gets to move something on them.
         if self.apu.take_dmc_request() {
             self.dmc = Dmc::Asked;
@@ -526,8 +526,8 @@ impl Bus {
         }
         // "Controllers should be strobed when the CPU transitions from a get
         // cycle to a put cycle", and not on the opposite edge — so it lands
-        // at the start of a put, rather than where the write itself did. A
-        // write arriving on a get waits for the next put.
+        // at the start of a put, rather than where the 'write' itself did. A
+        // 'write' arriving on a get waits for the next put.
         if Self::phase(self.cycle_count) == Phase::Put {
             if let Some(val) = self.strobe_pending.take() {
                 self.controllers[0].strobe(val);
@@ -546,7 +546,7 @@ impl Bus {
         }
         // One region clocks its picture at three and a fifth dots to the
         // processor's cycle rather than three, so every fifth cycle owes one
-        // more. Without it a frame there runs six and a half per cent long,
+        // more. Without it a frame there runs six and a half percent long,
         // which is a game that plays slow and sound that arrives faster than
         // it can be heard.
         if self.tv == TvSystem::Pal {
@@ -564,7 +564,7 @@ impl Bus {
     /// more than one of these, so the ticking lives in the callers.
     fn read_raw(&mut self, addr: u16) -> u8 {
         // The one register inside the 2A03 itself. The processor answers it on
-        // its own internal bus, and nothing is put on the external one — so
+        // its own internal bus, and nothing is put on the external one. So
         // unlike every other read this leaves open bus holding whatever it
         // held before, and the status byte is not what a later read of an
         // undriven address sees.
@@ -598,7 +598,7 @@ impl Bus {
             0x4014 => {
                 self.sprite_dma_page = val;
                 // The DMC's request is raised at the start of a cycle, this
-                // write at the end, so its halt begins a cycle later.
+                // 'write' at the end, so its halt begins a cycle later.
                 self.oam = Oam::Asked;
             }
             0x4016 => self.strobe_pending = Some(val),
@@ -763,7 +763,7 @@ impl Nes {
     /// A cartridge-space byte as the processor would see it, but without the
     /// read happening.
     ///
-    /// `$4020..=$FFFF` only, and for looking rather than running, the same as
+    /// `$4020...=$FFFF` only, and for looking rather than running, the same as
     /// [`Nes::ram`]: a debugger, or a test ROM that leaves its findings in
     /// cartridge RAM and expects to be read out rather than watched. Floating
     /// bus reads back as zero here rather than as whatever was last driven,
@@ -941,7 +941,7 @@ mod tests {
         assert!(grew < 64, "a sixteenfold rom grew the file by {grew} bytes");
     }
 
-    /// Anything that is not this build's save state for this cartridge is
+    /// Anything that is not this build's 'save' state for this cartridge is
     /// refused, rather than restored into a machine that makes no sense.
     #[cfg(feature = "snapshot")]
     #[test]
@@ -980,7 +980,7 @@ mod tests {
         assert!(dma == 513 || dma == 514, "OAM DMA took {dma} cycles, expected 513 or 514");
     }
 
-    /// Shifting the write by an odd number of cycles must swap the alignment.
+    /// Shifting the 'write' by an odd number of cycles must swap the alignment.
     /// Equal costs would mean the alignment cycle is never applied.
     #[test]
     fn oam_dma_alignment_alternates_with_the_write_cycle() {

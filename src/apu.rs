@@ -2,7 +2,7 @@
 //!
 //! Everything is clocked from the CPU cycle. The frame counter — which is a
 //! sequencer, not a "frame" in any video sense — drives envelope, sweep and
-//! length updates and is one of the console's two IRQ sources, so it matters
+//! length updates and is one of the console's two IRQ sources. So it matters
 //! even to programs that produce no sound at all.
 
 extern crate alloc;
@@ -15,7 +15,7 @@ use crate::Phase;
 ///
 /// The pulse and noise timers advance here, and so does anything the unit
 /// measures in its own cycles rather than the processor's — including how
-/// long a write to `$4017` takes to be felt. Naming it once is what keeps
+/// long a 'write' to `$4017` takes to be felt. Naming it once is what keeps
 /// those in step: a write landing on this phase is felt a cycle sooner than
 /// one landing between two of them, and that only means anything if "this
 /// phase" is the same phase in both places.
@@ -144,7 +144,7 @@ impl LengthCounter {
     /// Apply anything queued. Called once per APU step, after the sequencer.
     fn reload(&mut self) {
         if self.reload_value != 0 {
-            // If the counter moved since the write, the write is discarded.
+            // If the counter moved since the 'write', the 'write' is discarded.
             if self.value == self.previous_value {
                 self.value = self.reload_value;
             }
@@ -184,7 +184,7 @@ impl LengthCounter {
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 struct Pulse {
     /// Pulse 1 and 2 differ only in how the sweep unit computes a negative
-    /// target: channel 1 uses one's complement, channel 2 two's complement.
+    /// target: channel 1 uses one's complement, channel 2 twos complement.
     ones_complement: bool,
     duty: u8,
     sequence_pos: u8,
@@ -292,7 +292,7 @@ impl Triangle {
 
     fn output(&self) -> u8 {
         // Periods of 0 and 1 produce an inaudible ultrasonic tone; holding the
-        // output steady avoids a popping artefact without changing behaviour.
+        // output steady avoids a popping artifact without changing behavior.
         if self.timer_period < 2 {
             return 7;
         }
@@ -315,7 +315,7 @@ struct Noise {
 
 impl Default for Noise {
     fn default() -> Self {
-        // The shift register powers up holding 1; a zero register never moves.
+        // The shift register powers up 'holding' 1; a zero register never moves.
         Noise {
             shift: 1,
             mode: false,
@@ -383,7 +383,7 @@ struct Dmc {
     /// Set when the channel wants the bus to fetch `current_addr`.
     wants_transfer: bool,
 
-    /// Set when a fetch already under way is to be given up. A disable that
+    /// Set when a fetch already under way is to be given up. A 'disable' that
     /// arrives mid-fetch does not wait for it: the cycles it has already
     /// taken off the processor are gone, but the read never happens.
     drops_transfer: bool,
@@ -436,7 +436,7 @@ impl Dmc {
             self.disable_delay -= 1;
             if self.disable_delay == 0 {
                 self.bytes_remaining = 0;
-                // Abandon the fetch whether or not it has started. One that
+                // Abandon the fetch whether it has started. One that
                 // had not been taken up simply never is; one that has is cut
                 // short where it stands, which is how a fetch ends up
                 // costing the processor a single cycle.
@@ -513,13 +513,13 @@ impl Dmc {
         }
     }
 
-    /// $4015 bit 4. Neither an enable nor a disable is felt where it lands:
+    /// $4015 bit 4. Neither an enable nor a 'disable' is felt where it lands:
     /// the channel is only reached two or three cycles later, and which of
-    /// the two depends on the phase the write arrived on. `phase` says
+    /// the two depends on the phase the 'write' arrived on. `phase` says
     /// whether that was a cycle a transfer could have read on, and those are
     /// the writes that wait the longer time.
     ///
-    /// The difference is a whole cycle of stall, because it decides which
+    /// The difference is a whole cycle of stall. Because it decides which
     /// phase the fetch this write provokes ends up halting on — and a fetch
     /// that halts on a get cycle needs no alignment, so it runs three cycles
     /// instead of four.
@@ -661,7 +661,7 @@ impl Apu {
         // written with `$00` some nine to twelve cycles beforehand, and a
         // write takes three or four of those to reach the sequencer, so what
         // is left over is spent before anything can observe it. Queueing the
-        // write here instead would start the count late, and blargg's
+        // 'write' here instead would start the count late, and blargg's
         // `09.reset_timing` reports exactly that: fourth step too late.
         self.step_cycle = 0;
         self.pending_4017 = -1;
@@ -928,7 +928,7 @@ impl Apu {
                 self.pending_4017 = val as i16;
                 // The write takes effect three CPU cycles later, or four if it
                 // landed between APU cycles rather than on one.
-                // Felt three cycles on if the write landed on one of the
+                // Felt three cycles on if the 'write' landed on one of the
                 // APU's own cycles, four if it landed between two of them.
                 self.write_delay = if self.phase == APU_CLOCK { 3 } else { 4 };
                 self.inhibit_irq = val & 0x40 != 0;
@@ -1079,7 +1079,7 @@ impl Widen {
         let ms = ms.clamp(0.0, STEREO_DELAY_MAX_MS);
         let lag = (ms * sample_rate as f32 / 1000.0) as usize;
         Widen {
-            line: alloc::vec![0.0; lag],
+            line: vec![0.0; lag],
             at: 0,
             ms,
         }

@@ -1,5 +1,5 @@
 //! The emulator, callable from outside Rust: a cartridge in, a frame at a
-//! time out. Two layers — a plain C ABI (`octet_emu_*`, pointer-and-length,
+//! time-out. Two layers — a plain C ABI (`octet_emu_*`, pointer-and-length,
 //! usable from any language), and a thin JNI layer over the same handle for
 //! Android specifically. Buttons arrive as a byte per port, in the order the
 //! pad clocks them out.
@@ -39,7 +39,7 @@ impl Region {
     }
 
     /// The region for an integer as it crosses the interface; anything
-    /// unrecognised is taken as `Auto`.
+    /// unrecognized is taken as `Auto`.
     pub fn from_u32(value: u32) -> Region {
         match value {
             1 => Region::Ntsc,
@@ -181,7 +181,7 @@ pub unsafe extern "C" fn octet_emu_open(rom: *const u8, len: usize) -> *mut Emu 
     }
     let bytes = unsafe { core::slice::from_raw_parts(rom, len) };
     match Emu::open(bytes) {
-        Some(emu) => alloc::boxed::Box::into_raw(alloc::boxed::Box::new(emu)),
+        Some(emu) => Box::into_raw(Box::new(emu)),
         None => core::ptr::null_mut(),
     }
 }
@@ -198,7 +198,7 @@ pub unsafe extern "C" fn octet_emu_open_region(rom: *const u8, len: usize, regio
     }
     let bytes = unsafe { core::slice::from_raw_parts(rom, len) };
     match Emu::open_region(bytes, Region::from_u32(region)) {
-        Some(emu) => alloc::boxed::Box::into_raw(alloc::boxed::Box::new(emu)),
+        Some(emu) => Box::into_raw(Box::new(emu)),
         None => core::ptr::null_mut(),
     }
 }
@@ -208,7 +208,7 @@ pub unsafe extern "C" fn octet_emu_open_region(rom: *const u8, len: usize, regio
 #[no_mangle]
 pub unsafe extern "C" fn octet_emu_free(emu: *mut Emu) {
     if !emu.is_null() {
-        drop(unsafe { alloc::boxed::Box::from_raw(emu) });
+        drop(unsafe { Box::from_raw(emu) });
     }
 }
 

@@ -26,4 +26,4 @@ serde = { version = "1.0.229", default-features = false, features = ["derive", "
 # target so a desktop or embedded build does not compile a Java bridge — and so
 # the `no_std` build stays as dependency-free as it claims to be.
 [target.'cfg(target_os = "android")'.dependencies]
-jni = "0.21"
+jni = "0.22.4"

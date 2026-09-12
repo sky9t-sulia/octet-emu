@@ -277,6 +277,10 @@ impl Mapper for Vrc2_4 {
         self.mirroring
     }
 
+    fn irq(&self) -> bool {
+        self.irq.flag
+    }
+
     fn ticks_cpu(&self) -> bool {
         true
     }
@@ -287,10 +291,6 @@ impl Mapper for Vrc2_4 {
         if self.variant.is_vrc4() || (self.heuristics && self.variant != Variant::Vrc2a) {
             self.irq.tick();
         }
-    }
-
-    fn irq(&self) -> bool {
-        self.irq.flag
     }
 
     fn nvram(&self) -> &[u8] {

@@ -52,8 +52,8 @@ pub(crate) mod bytes {
 /// frame draws it again. Left out of the file, and blank until then.
 /// A blank picture for a save state to land on; the real one is redrawn
 /// by the next frame.
-pub(crate) fn blank_ids() -> alloc::boxed::Box<[u16; crate::FRAME_WIDTH * crate::FRAME_HEIGHT]> {
-    alloc::boxed::Box::new([0; crate::FRAME_WIDTH * crate::FRAME_HEIGHT])
+pub(crate) fn blank_ids() -> Box<[u16; crate::FRAME_WIDTH * crate::FRAME_HEIGHT]> {
+    Box::new([0; crate::FRAME_WIDTH * crate::FRAME_HEIGHT])
 }
 
 /// The mapper, which is a trait object and so has no type serde can name.
@@ -66,7 +66,7 @@ pub(crate) mod mapper {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
 
-    // The reference to the Box is serde's to give: `with` is handed the
+    // The reference to the Box is Serde's to give: `with` is handed the
     // field as it stands, and the field is a Box.
     #[allow(clippy::borrowed_box)]
     pub fn serialize<S: Serializer>(
@@ -107,10 +107,10 @@ pub(crate) mod mapper {
 
 /// A mapper's saved bytes, waiting to be given to the real board. Never
 /// reaches the bus: it lives only between reading a file and restoring it.
-pub(crate) struct Pending(pub alloc::vec::Vec<u8>);
+pub(crate) struct Pending(pub Vec<u8>);
 
 impl crate::mapper::Mapper for Pending {
-    fn save_state(&self) -> alloc::vec::Vec<u8> {
+    fn save_state(&self) -> Vec<u8> {
         self.0.clone()
     }
 

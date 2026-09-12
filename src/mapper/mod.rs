@@ -35,14 +35,14 @@ pub trait Mapper: Send {
     /// than defaulted: a board that forgot would drop its banking into a file
     /// that loads with the wrong pages showing, rather than fail to build.
     #[cfg(feature = "snapshot")]
-    fn save_state(&self) -> alloc::vec::Vec<u8>;
+    fn save_state(&self) -> Vec<u8>;
 
     /// Put back what [`Mapper::save_state`] wrote. False if the bytes are not
     /// this board's.
     #[cfg(feature = "snapshot")]
     fn load_state(&mut self, data: &[u8]) -> bool;
 
-    /// CPU read of `$4020..=$FFFF`. `None` leaves the data bus floating, which
+    /// CPU read of `$4020...=$FFFF`. `None` leaves the data bus floating, which
     /// the bus resolves to the last value it drove (open bus).
     fn cpu_read(&mut self, addr: u16) -> Option<u8> {
         self.cpu_peek(addr)
@@ -54,17 +54,17 @@ pub trait Mapper: Send {
     /// CPU write to `$4020..=$FFFF`.
     fn cpu_write(&mut self, addr: u16, val: u8);
 
-    /// PPU read of `$0000..=$1FFF` (pattern tables).
+    /// PPU read of `$0000...=$1FFF` (pattern tables).
     fn ppu_read(&mut self, addr: u16) -> u8;
 
-    /// PPU write to `$0000..=$1FFF`. A CHR ROM cartridge ignores it.
+    /// PPU write to `$0000...=$1FFF`. A CHR ROM cartridge ignores it.
     fn ppu_write(&mut self, addr: u16, val: u8);
 
     /// Current nametable arrangement. May change at runtime.
     fn mirroring(&self) -> Mirroring;
 
     /// Mappers that supply their own nametable memory (MMC5, Sunsoft FME-7
-    /// four-screen, …) override these to intercept `$2000..=$3EFF`.
+    /// four-screen, …) override these to intercept `$2000...=$3EFF`.
     fn read_nametable(&mut self, _addr: u16) -> Option<u8> {
         None
     }
@@ -95,7 +95,7 @@ pub trait Mapper: Send {
         false
     }
 
-    /// Whether it answers for any of `$2000..=$3EFF` itself.
+    /// Whether it answers for any of `$2000...=$3EFF` itself.
     fn serves_nametables(&self) -> bool {
         false
     }
@@ -108,7 +108,7 @@ pub trait Mapper: Send {
     /// the MMC5 infers its position from the pattern of reads.
     fn ppu_bus_read(&mut self, _addr: u16) {}
 
-    /// Called when the CPU writes one of `$2000..=$2007`. The MMC5 watches
+    /// Called when the CPU writes one of `$2000...=$2007`. The MMC5 watches
     /// the sprite size and rendering bits to decide how to bank CHR.
     fn ppu_register_write(&mut self, _addr: u16, _val: u8) {}
 

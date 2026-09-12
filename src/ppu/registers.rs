@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Dots between a write of `$2006` and the PPU loading `v` from it.
+/// Dots between a 'write' of `$2006` and the PPU loading `v` from it.
 const ADDR_WRITE_DELAY: u8 = 3;
 
 impl Ppu {
@@ -105,7 +105,7 @@ impl Ppu {
         }
     }
 
-    /// Take a write off the processor.
+    /// Take a 'write' off the processor.
     ///
     /// Everything is acted on where it lands except `$2006`, which the PPU
     /// takes its time over: the scroll counter is loaded three dots later, and
@@ -211,7 +211,7 @@ impl Ppu {
     fn increment_v(&mut self, mapper: &mut dyn Mapper) {
         // During rendering, $2007 access instead steps the scroll counters,
         // which is why writing to it mid-frame corrupts the display. The step
-        // is taken as late as a `$2006` write's is, so the fetch the access
+        // is taken as late as a `$2006` 'writes' is, so the fetch the access
         // lands on still runs off the address it had.
         if self.mask_rendering() && self.scanline < 240 {
             self.pending_increment = Some(ADDR_WRITE_DELAY);
@@ -242,15 +242,15 @@ impl Ppu {
         bank * 0x400 + offset
     }
 
-    /// Put an address on the bus and latch its low byte: the first dot of an
-    /// access. See [`Ppu::ale_latch`] for why the two halves part company.
+    /// Put an address on the bus and latch its low byte: the first dot of access. 
+    /// See [`Ppu::ale_latch`] for why the two halves part company.
     pub(super) fn ale(&mut self, addr: u16) {
         let addr = addr & 0x3fff;
         self.ale_latch = addr as u8;
         self.bus_addr = addr;
     }
 
-    /// Read on the second dot of an access.
+    /// Read on the second dot of access.
     ///
     /// `driven` is the address the PPU is putting out *now* — only its upper
     /// lines are used, because the lower ones come from whatever was latched
@@ -306,7 +306,7 @@ impl Ppu {
         }
     }
 
-    /// Entries $3F10/$14/$18/$1C mirror the backdrop colour at $3F00.
+    /// Entries $3F10/$14/$18/$1C mirror the backdrop color at $3F00.
     #[rustfmt::skip]
     fn palette_index(addr: u16) -> usize {
         let idx = (addr & 0x1f) as usize;

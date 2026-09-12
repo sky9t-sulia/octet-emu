@@ -161,14 +161,14 @@ impl Mmc3 {
                 }
             }
             // Revision B reloads to zero and fires again on every clock, which
-            // is the behaviour most software was written against.
+            // is the behavior most software was written against.
             _ => self.irq_flag = true,
         }
     }
 
     /// Whether MMC6's work RAM answers at all, and for which half.
     fn mmc6_access(&self, addr: u16) -> (bool, bool) {
-        // Bit 5 of $8000 is the master enable; without it neither half responds.
+        // Bit 5 of $8000 is the master enable; without it neither half response.
         if self.bank_select & 0x20 == 0 {
             return (false, false);
         }
@@ -268,6 +268,10 @@ impl Mapper for Mmc3 {
         None
     }
 
+    fn irq(&self) -> bool {
+        self.irq_flag
+    }
+
     fn watches_ppu_bus(&self) -> bool {
         true
     }
@@ -285,10 +289,6 @@ impl Mapper for Mmc3 {
             self.a12_low_cycles = 0;
         }
         self.prev_a12 = a12;
-    }
-
-    fn irq(&self) -> bool {
-        self.irq_flag
     }
 
     fn nvram(&self) -> &[u8] {

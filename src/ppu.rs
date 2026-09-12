@@ -1,6 +1,6 @@
 //! The 2C02 picture processor.
 //!
-//! Modelled dot by dot. The scroll register layout, the shift-register
+//! Modeled dot by dot. The scroll register layout, the shift-register
 //! pipeline and the two-scanline-deep sprite evaluation are the real ones,
 //! because the timing quirks games rely on — mid-frame scroll splits, sprite
 //! zero hit, the pre-render dot skip — only fall out of that structure.
@@ -10,7 +10,7 @@ use alloc::boxed::Box;
 use crate::cartridge::{Mirroring, TvSystem};
 use crate::mapper::Mapper;
 
-/// How many distinct colours a PPU can emit: sixty-four palette entries,
+/// How many distinct colors a PPU can emit: sixty-four palette entries,
 /// each under one of eight emphasis settings.
 pub const COLOR_IDS: usize = 512;
 
@@ -36,7 +36,7 @@ pub const PALETTE: [u32; 64] = [
     0xf8d878, 0xd8f878, 0xb8f8b8, 0xb8f8d8, 0x00fcfc, 0xf8d8f8, 0x000000, 0x000000,
 ];
 
-/// The RGB a colour identity stands for — the inverse of what the PPU wrote
+/// The RGB a color identity stands for — the inverse of what the PPU wrote
 /// into [`Ppu::color_ids`].
 ///
 /// A front end that carries identities rather than pixels expands them with
@@ -52,11 +52,11 @@ pub fn expand(id: u16) -> u32 {
     }
 }
 
-/// Every colour a PPU can emit, indexed by identity.
+/// Every color a PPU can emit, indexed by identity.
 ///
 /// Handed to a front end once so it can expand a frame itself — on a GPU, in
 /// a shader — instead of being sent pixels. Keeping the table's construction
-/// here is what stops the two ends disagreeing about a colour.
+/// here is what stops the two ends disagreeing about a color.
 pub fn palette_table() -> [u32; COLOR_IDS] {
     let mut out = [0; COLOR_IDS];
     let mut id = 0;
@@ -246,7 +246,7 @@ pub struct Ppu {
     /// The frame on which the data bus was last driven, for [`Ppu::decay_bus`].
     open_bus_frame: u64,
 
-    /// The finished picture, as colour identities rather than RGB: the
+    /// The finished picture, as color identities rather than RGB: the
     /// six-bit palette entry in the low bits, the three `$2001` emphasis bits
     /// above it. See [`expand`].
     ///
@@ -274,7 +274,7 @@ mod sprites;
 /// coarsest clock that still lands well inside the second AccuracyCoin allows,
 /// on both television systems.
 ///
-/// Modelled as the whole bus going at once. Hardware loses it bit by bit at
+/// Modeled as the whole bus going at once. Hardware loses it bit by bit at
 /// rates no two chips agree on, which is not a thing worth reproducing.
 const BUS_DECAY_FRAMES: u64 = 36;
 
@@ -367,7 +367,7 @@ impl Ppu {
         self.dot = 0;
     }
 
-    /// The completed frame as colour identities; see the field.
+    /// The completed frame as color identities; see the field.
     pub fn color_ids(&self) -> &[u16; FRAME_WIDTH * FRAME_HEIGHT] {
         &self.color_ids
     }

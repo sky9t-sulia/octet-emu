@@ -13,7 +13,7 @@ pub enum Button {
 }
 
 impl Button {
-    /// Bit position in the shift register, in the order the pad clocks them out.
+    /// BIT position in the shift register, in the order the pad clocks them out.
     const fn bit(self) -> u8 {
         match self {
             Button::A => 0,

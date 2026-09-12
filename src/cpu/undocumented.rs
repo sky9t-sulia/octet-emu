@@ -142,7 +142,7 @@ impl Cpu {
                 self.x = out;
                 self.set_zn(out);
             }
-            // ANE and LXA depend on analog behaviour of the chip; the constant
+            // ANE and LXA depend on analog behavior of the chip; the constant
             // below is the value most NES-era hardware settles on.
             0x8b => {
                 let v = val!(imm);
@@ -275,7 +275,7 @@ impl Cpu {
     ///
     /// Both come from one cause: these opcodes leave a register driving the
     /// address-high lines while the adder is still carrying into them, so the
-    /// two collide on the bus. That collision needs the cycle before the write
+    /// two collide on the bus. That collision needs the cycle before the 'write'
     /// to be the processor's own. When the DMA unit takes that cycle instead,
     /// the lines have settled by the time the write goes out and neither
     /// happens — the instruction stores the value it was given, at the address
