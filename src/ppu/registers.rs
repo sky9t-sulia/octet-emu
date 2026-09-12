@@ -26,8 +26,8 @@ impl Ppu {
 
     /// A read of `$2002` beginning: `M2` has gone high. Bit 7 is the only one
     /// of the three flags with a latch behind it, and this is where that latch
-    /// is filled and the flag it copied cleared — a dot before the byte is
-    /// handed over in [`Ppu::read_register`], which finds the other two
+    /// is filled and the flag it copied cleared. That is a dot before the byte
+    /// is handed over in [`Ppu::read_register`], which finds the other two
     /// wherever they have got to by then.
     pub fn begin_status_read(&mut self) {
         // A read landing on the dot before the flag would be set wins the
@@ -82,9 +82,9 @@ impl Ppu {
                     // memory behind them and come off the data bus.
                     (self.read_palette(addr) & 0x3f) | (self.open_bus & 0xc0)
                 } else if self.mask_rendering() && self.scanline < 240 {
-                    // Rendering owns the bus. The access puts its address out
-                    // — which is enough to disturb a fetch in flight, since
-                    // only the low lines are latched — but the byte the
+                    // Rendering owns the bus. The access puts its address
+                    // out, which is enough to disturb a fetch in flight:
+                    // only the low lines are latched. But the byte the
                     // buffer ends up with is the one the renderer reads two
                     // dots from now, not one of this register's own.
                     let buffered = self.read_buffer;

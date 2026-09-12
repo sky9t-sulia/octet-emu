@@ -67,9 +67,9 @@ impl Ppu {
             }
 
             // The secondary OAM address goes back to the start of its memory
-            // three times a line — at the end of the clear, the end of
-            // evaluation, and the end of the line — and whatever pinned it is
-            // let go at the same moments. Rendering has to be on as each goes
+            // three times a line: at the end of the clear, the end of
+            // evaluation, and the end of the line. Whatever pinned it is let
+            // go at the same moments. Rendering has to be on as each goes
             // by, which is how the address can still be frozen, or left part
             // way along, when the next stage starts reading.
             if matches!(self.dot, 63 | 255 | 339) {

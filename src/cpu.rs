@@ -1,9 +1,9 @@
 //! Cycle-accurate Ricoh 2A03 CPU core (6502 without decimal mode).
 //!
-//! Timing comes from the bus, not a cycle table: every memory access the real
-//! chip performs — including dummy reads at un-fixed indexed addresses and the
-//! double write of a read-modify-write — is issued here, and each one advances
-//! the rest of the machine by exactly one cycle. Instruction length therefore
+//! Timing comes from the bus, not a cycle table. Every memory access the real
+//! chip performs is issued here — including dummy reads at un-fixed indexed
+//! addresses and the double write of a read-modify-write — and each one
+//! advances the machine by exactly one cycle. Instruction length therefore
 //! falls out of the access pattern instead of being asserted separately.
 
 /// The CPU's view of the machine. Both accessors must clock the whole system
@@ -41,6 +41,37 @@ pub const N: u8 = 0x80;
 const NMI_VECTOR: u16 = 0xfffa;
 const RESET_VECTOR: u16 = 0xfffc;
 const IRQ_VECTOR: u16 = 0xfffe;
+
+/// The operand of a value-consuming instruction, fetched.
+///
+/// Both opcode tables want this, and a macro cannot see the `self` and `bus`
+/// of the method it lands in, so they are handed to it. Each table wraps it in
+/// a line of its own that supplies the two, and its rows stay as they were.
+macro_rules! val_from {
+    ($c:expr, $b:expr, imm) => { $c.fetch($b) };
+    ($c:expr, $b:expr, zp) => {{ let a = $c.addr_zp($b); $c.read($b, a) }};
+    ($c:expr, $b:expr, zpx) => {{ let a = $c.addr_zp_idx($b, $c.x); $c.read($b, a) }};
+    ($c:expr, $b:expr, zpy) => {{ let a = $c.addr_zp_idx($b, $c.y); $c.read($b, a) }};
+    ($c:expr, $b:expr, abs) => {{ let a = $c.addr_abs($b); $c.read($b, a) }};
+    ($c:expr, $b:expr, absx) => {{ let a = $c.addr_abs_idx_read($b, $c.x); $c.read($b, a) }};
+    ($c:expr, $b:expr, absy) => {{ let a = $c.addr_abs_idx_read($b, $c.y); $c.read($b, a) }};
+    ($c:expr, $b:expr, indx) => {{ let a = $c.addr_ind_x($b); $c.read($b, a) }};
+    ($c:expr, $b:expr, indy) => {{ let a = $c.addr_ind_y_read($b); $c.read($b, a) }};
+}
+
+/// The effective address of a store or read-modify-write, which always pays
+/// the index fixup cycle — where a read pays it only across a page boundary.
+/// Handed its `self` and `bus` for the same reason as [`val_from`].
+macro_rules! addr_from {
+    ($c:expr, $b:expr, zp) => { $c.addr_zp($b) };
+    ($c:expr, $b:expr, zpx) => { $c.addr_zp_idx($b, $c.x) };
+    ($c:expr, $b:expr, zpy) => { $c.addr_zp_idx($b, $c.y) };
+    ($c:expr, $b:expr, abs) => { $c.addr_abs($b) };
+    ($c:expr, $b:expr, absx) => { $c.addr_abs_idx_write($b, $c.x) };
+    ($c:expr, $b:expr, absy) => { $c.addr_abs_idx_write($b, $c.y) };
+    ($c:expr, $b:expr, indx) => { $c.addr_ind_x($b) };
+    ($c:expr, $b:expr, indy) => { $c.addr_ind_y_write($b) };
+}
 
 mod execute;
 mod ops;

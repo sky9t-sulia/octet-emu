@@ -78,8 +78,8 @@ pub struct Ppu {
     /// Where the sprite unit is in secondary OAM.
     ///
     /// Evaluation fills it and the sprite fetch walks back over it, one byte
-    /// every two dots, so a full fetch of thirty-two bytes brings this back to
-    /// zero by dot 321 — which is why a `$2004` read taken after that normally
+    /// every two dots. A full fetch of thirty-two bytes brings this back to
+    /// zero by dot 321, which is why a `$2004` read taken after that normally
     /// sees index zero. Turn rendering off for part of the fetch and the
     /// stepping stops with it, leaving the address somewhere else.
     oam2_addr: u8,
@@ -192,10 +192,10 @@ pub struct Ppu {
 
     /// Dots left before a `$2007` read fills the read buffer.
     ///
-    /// The buffer is not filled where the access happens but two dots later,
-    /// and while rendering it takes whatever the fetch landing on that dot
-    /// read — the register does not get a read of its own, it just borrows
-    /// the one the renderer was already doing.
+    /// The buffer is not filled where the access happens but two dots later.
+    /// While rendering, it takes whatever the fetch landing on that dot read:
+    /// the register does not get a read of its own, it borrows the one the
+    /// renderer was already doing.
     buffer_fill: u8,
 
     nmi_output: bool,

@@ -73,15 +73,15 @@ impl Cpu {
     ///
     /// Not taken, it is two cycles and decides about interrupts where every
     /// other instruction does. Taken, it decides *before* it moves the
-    /// program counter and then never looks again — so an interrupt arriving
+    /// program counter and then never looks again. An interrupt arriving
     /// during the cycles that follow waits for the next instruction, which is
     /// what AccuracyCoin's page 12 means by a branch not polling before its
     /// third cycle.
     ///
     /// That answer is held in a local rather than left sitting in the poll's
-    /// shift register. Anything that adds cycles here polls as well — a DMA
+    /// shift register. Anything that adds cycles here polls as well: a DMA
     /// stealing the third cycle keeps sampling the lines while it holds the
-    /// processor off the bus — and would otherwise push the branch's own
+    /// processor off the bus. Without the local it would push the branch's own
     /// answer out and take an interrupt this instruction had already declined.
     /// The lines still get sampled; it is only this instruction's verdict that
     /// is fixed.

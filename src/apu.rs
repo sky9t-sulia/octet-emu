@@ -56,8 +56,8 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// How far the second channel lags the first, in milliseconds, by default.
 ///
 /// The console is mono: one DAC, one signal. Sent to both speakers unaltered
-/// it sits in a point between them, and a few milliseconds of delay on one
-/// side is enough for the ear to place the two arrivals apart and hear width
+/// it sits in a point between them. A few milliseconds of delay on one side
+/// is enough for the ear to place the two arrivals apart and hear width
 /// instead — the precedence effect a stereo widener works on. Three or four
 /// is the useful window; below two it reads as a comb rather than a space,
 /// and past ten the arrivals separate into an echo.
@@ -657,10 +657,10 @@ impl Apu {
         self.inhibit_irq = false;
         self.step = 0;
         // The sequencer is already running by the time the first instruction
-        // does: out of reset the APU behaves as though `$4017` had been
+        // does. Out of reset the APU behaves as though `$4017` had been
         // written with `$00` some nine to twelve cycles beforehand, and a
-        // write takes three or four of those to reach the sequencer, so what
-        // is left over is spent before anything can observe it. Queueing the
+        // write takes three or four of those to reach the sequencer. What is
+        // left over is spent before anything can observe it. Queueing the
         // 'write' here instead would start the count late, and blargg's
         // `09.reset_timing` reports exactly that: fourth step too late.
         self.step_cycle = 0;

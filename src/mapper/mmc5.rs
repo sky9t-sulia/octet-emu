@@ -1,15 +1,15 @@
 //! Mapper 5 — MMC5, the most capable chip Nintendo shipped.
 //!
-//! It is less a mapper than a coprocessor: four PRG windows that can each be
-//! ROM or RAM, two independent CHR bank sets swapped automatically between
-//! background and sprite fetches, a kilobyte of expansion RAM usable as a
-//! nametable, programmable fill-mode tiles, a 8x8 multiplier and a scanline
-//! counter.
+//! It is less a mapper than a coprocessor. There are four PRG windows, each
+//! of them ROM or RAM, and two independent CHR bank sets swapped
+//! automatically between background and sprite fetches. Beside them sit a
+//! kilobyte of expansion RAM usable as a nametable, programmable fill-mode
+//! tiles, a 8x8 multiplier and a scanline counter.
 //!
 //! The scanline counter is the subtle part. The MMC5 has no connection to the
 //! PPU's timing signals, so it infers where the PPU is from the shape of its
-//! reads: three consecutive reads of the same nametable address only happen at
-//! the end of a scanline, and that is what it counts.
+//! reads. Three consecutive reads of the same nametable address only happen
+//! at the end of a scanline, and that is what it counts.
 //!
 //! Not yet implemented: the vertical split screen, extended attribute mode,
 //! and the MMC5's own sound channels.

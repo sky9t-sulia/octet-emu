@@ -377,7 +377,7 @@ const ACCESS_DOT: u32 = 2;
 /// Which half of the processor's clock a cycle falls on.
 ///
 /// The 2A03 divides the processor clock in two, and which half a cycle is on
-/// decides what may happen on it: a transfer may read on a get and write on a
+/// decides what may happen on it. A transfer may read on a get and write on a
 /// put, and several things in the APU happen on one of the two *edges*
 /// between them rather than during a cycle at all. Those edges are what the
 /// hardware documentation talks about, so they are what this models — a bare
@@ -408,10 +408,10 @@ enum Oam {
     /// `$4014` has been written, but the request is not up yet.
     ///
     /// Page 13's `DMC DMA + OAM DMA` wants the halt a cycle earlier than
-    /// this, and its answer key matches exactly without this state — but
-    /// moving the halt also moves the transfer onto the other phase, so it
-    /// gains the alignment cycle it did not need and the whole transfer runs
-    /// 514 cycles instead of 513. That cycle shifts everything downstream and
+    /// this, and its answer key matches exactly without this state. But
+    /// moving the halt also moves the transfer onto the other phase: it gains
+    /// the alignment cycle it did not need, and the whole transfer runs 514
+    /// cycles instead of 513. That cycle shifts everything downstream and
     /// costs five other tests. The two want the phase itself corrected, not
     /// the halt moved, and that reaches further than this enum.
     Queued,
@@ -517,9 +517,9 @@ impl Bus {
             self.dmc = Dmc::Asked;
         }
         // Disabling the channel gives up a fetch that is still taking the
-        // bus: one that has not spent a cycle yet simply never does, and one
-        // that has spent its halt stops there, a cycle of stall and nothing
-        // else. Past that the fetch is committed and reads regardless — by
+        // bus. One that has not spent a cycle yet simply never does; one that
+        // has spent its halt stops there, a cycle of stall and nothing else.
+        // Past that the fetch is committed and reads regardless — by
         // then it is only waiting for a get cycle to read on.
         if self.apu.take_dmc_abort() && matches!(self.dmc, Dmc::Asked | Dmc::Dummy) {
             self.dmc = Dmc::Idle;
@@ -616,8 +616,8 @@ impl Bus {
     /// A read of `$2002` is the one access the PPU feels at two moments, and
     /// the only reason this is not simply the three lines it looks like. Bit 7
     /// has a latch behind it, filled and the flag it copied cleared as `M2`
-    /// goes high, where the access lands; the two sprite flags have no latch,
-    /// and are whatever they are when `M2` goes low again — 1.875 dots later
+    /// goes high, where the access lands. The two sprite flags have no latch:
+    /// they are whatever they are when `M2` goes low again — 1.875 dots later
     /// on a revision G chip, which is this cycle's last dot. So for that one
     /// address the access is taken after the cycle's dots rather than between
     /// them, and reports flags the rest of the machine has moved on to.
@@ -718,10 +718,10 @@ impl CpuBus for Bus {
             return;
         }
 
-        // The sprite transfer, which begins on a get cycle and then
-        // alternates, so its step's parity and the cycle's agree — until a
-        // fetch takes a get out from under it, and then it waits for them to
-        // line up again.
+        // The sprite transfer begins on a get cycle and then alternates, so
+        // its step's parity and the cycle's agree. A fetch taking a get out
+        // from under it breaks that, and then it waits for them to line up
+        // again.
         //
         // It may use a cycle the fetch is only spending to take the bus:
         // the processor is already off the bus, so there is nothing for that

@@ -176,14 +176,8 @@ impl Emu {
 /// `rom` must point to `len` readable bytes.
 #[no_mangle]
 pub unsafe extern "C" fn octet_emu_open(rom: *const u8, len: usize) -> *mut Emu {
-    if rom.is_null() || len == 0 {
-        return core::ptr::null_mut();
-    }
-    let bytes = unsafe { core::slice::from_raw_parts(rom, len) };
-    match Emu::open(bytes) {
-        Some(emu) => Box::into_raw(Box::new(emu)),
-        None => core::ptr::null_mut(),
-    }
+    // Region 0 is `Region::Auto`, which is what opening without one means.
+    unsafe { octet_emu_open_region(rom, len, 0) }
 }
 
 /// As [`octet_emu_open`], but running at `region`: 0 as the cartridge asks,
@@ -382,7 +376,7 @@ mod jni_bridge {
     use super::{Emu, Region};
     use jni::objects::{JByteBuffer, JClass};
     use jni::sys::{jboolean, jbyteArray, jint, jlong};
-    use jni::JNIEnv;
+    use jni::{Env, EnvUnowned};
 
     fn handle_mut<'a>(handle: jlong) -> Option<&'a mut Emu> {
         unsafe { (handle as *mut Emu).as_mut() }
@@ -392,24 +386,57 @@ mod jni_bridge {
         unsafe { (handle as *const Emu).as_ref() }
     }
 
-    #[no_mangle]
-    pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_openRegion<'local>(
-        env: JNIEnv<'local>,
-        _class: JClass<'local>,
-        rom: jbyteArray,
-        region: jint,
-    ) -> jlong {
-        let rom = unsafe { jni::objects::JByteArray::from_raw(rom) };
-        let Ok(bytes) = env.convert_byte_array(&rom) else { return 0 };
-        match Emu::open_region(&bytes, Region::from_u32(region as u32)) {
-            Some(emu) => alloc::boxed::Box::into_raw(alloc::boxed::Box::new(emu)) as jlong,
-            None => 0,
+    /// A native method is handed an `EnvUnowned`, which is only the pointer;
+    /// the API lives on `Env`. Borrowing one also wraps the body in a
+    /// `catch_unwind`, since a panic crossing back into the JVM aborts the
+    /// process. `fallback` is what Java sees if that happens, or if the
+    /// thread cannot be attached.
+    fn in_env<'local, T>(
+        env: &mut EnvUnowned<'local>,
+        fallback: T,
+        body: impl FnOnce(&mut Env<'local>) -> T,
+    ) -> T {
+        let outcome = env.with_env(|env| Ok::<T, jni::errors::Error>(body(env)));
+        match outcome.into_outcome() {
+            jni::Outcome::Ok(value) => value,
+            _ => fallback,
+        }
+    }
+
+    /// Hand bytes back to Java as a `byte[]`, or null if one cannot be made.
+    /// Java has no unsigned byte, so the copy is reread as signed on the way
+    /// out; both readers below want the same thing.
+    fn byte_array(env: &mut Env<'_>, data: &[u8]) -> jbyteArray {
+        let signed: alloc::vec::Vec<i8> = data.iter().map(|&b| b as i8).collect();
+        match env.new_byte_array(signed.len()) {
+            Ok(arr) => {
+                let _ = arr.set_region(env, 0, &signed);
+                arr.into_raw()
+            }
+            Err(_) => core::ptr::null_mut(),
         }
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_openRegion<'local>(
+        mut env: EnvUnowned<'local>,
+        _class: JClass<'local>,
+        rom: jbyteArray,
+        region: jint,
+    ) -> jlong {
+        in_env(&mut env, 0, |env| {
+            let rom = unsafe { jni::objects::JByteArray::from_raw(env, rom) };
+            let Ok(bytes) = env.convert_byte_array(&rom) else { return 0 };
+            match Emu::open_region(&bytes, Region::from_u32(region as u32)) {
+                Some(emu) => alloc::boxed::Box::into_raw(alloc::boxed::Box::new(emu)) as jlong,
+                None => 0,
+            }
+        })
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_free<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) {
@@ -420,7 +447,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_reset<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) {
@@ -431,7 +458,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_setButtons<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
         port: jint,
@@ -444,7 +471,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_runFrame<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) {
@@ -459,23 +486,25 @@ mod jni_bridge {
     /// opaque going out, since the core never sets it.
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_pixels<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
         out: JByteBuffer<'local>,
     ) {
-        let Some(emu) = handle_ref(handle) else { return };
-        let Ok(ptr) = env.get_direct_buffer_address(&out) else { return };
-        let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return };
-        let dst = unsafe { core::slice::from_raw_parts_mut(ptr, cap) };
-        // Expanded straight into the buffer Java handed over: no intermediate
-        // picture, and the same loop that was here before.
-        emu.write_rgba(dst);
+        in_env(&mut env, (), |env| {
+            let Some(emu) = handle_ref(handle) else { return };
+            let Ok(ptr) = env.get_direct_buffer_address(&out) else { return };
+            let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return };
+            let dst = unsafe { core::slice::from_raw_parts_mut(ptr, cap) };
+            // Expanded straight into the buffer Java handed over: no
+            // intermediate picture, and the same loop that was here before.
+            emu.write_rgba(dst);
+        })
     }
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_width<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
     ) -> jint {
         super::WIDTH as jint
@@ -483,7 +512,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_height<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
     ) -> jint {
         super::HEIGHT as jint
@@ -491,7 +520,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_sampleRate<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) -> jint {
@@ -500,7 +529,7 @@ mod jni_bridge {
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_frameRate<'local>(
-        _env: JNIEnv<'local>,
+        _env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) -> jint {
@@ -513,83 +542,80 @@ mod jni_bridge {
     /// copy, not a conversion. Returns how many samples were written.
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_takeAudio<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
         out: JByteBuffer<'local>,
     ) -> jint {
-        let Some(emu) = handle_mut(handle) else { return 0 };
-        let Ok(ptr) = env.get_direct_buffer_address(&out) else { return 0 };
-        let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return 0 };
-        let samples = cap / 4;
-        let dst = unsafe { core::slice::from_raw_parts_mut(ptr as *mut f32, samples) };
-        emu.take_audio(dst) as jint
+        in_env(&mut env, 0, |env| {
+            let Some(emu) = handle_mut(handle) else { return 0 };
+            let Ok(ptr) = env.get_direct_buffer_address(&out) else { return 0 };
+            let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return 0 };
+            let samples = cap / 4;
+            let dst = unsafe { core::slice::from_raw_parts_mut(ptr as *mut f32, samples) };
+            emu.take_audio(dst) as jint
+        })
     }
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_saveRead<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) -> jbyteArray {
-        let data: &[u8] = handle_ref(handle).map_or(&[], |emu| emu.save_data());
-        let signed: alloc::vec::Vec<i8> = data.iter().map(|&b| b as i8).collect();
-        match env.new_byte_array(signed.len() as i32) {
-            Ok(arr) => {
-                let _ = env.set_byte_array_region(&arr, 0, &signed);
-                arr.into_raw()
-            }
-            Err(_) => core::ptr::null_mut(),
-        }
+        in_env(&mut env, core::ptr::null_mut(), |env| {
+            let data: &[u8] = handle_ref(handle).map_or(&[], |emu| emu.save_data());
+            byte_array(env, data)
+        })
     }
 
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_saveWrite<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
         data: jbyteArray,
     ) {
-        let Some(emu) = handle_mut(handle) else { return };
-        let arr = unsafe { jni::objects::JByteArray::from_raw(data) };
-        if let Ok(bytes) = env.convert_byte_array(&arr) {
-            emu.load_save_data(&bytes);
-        }
+        in_env(&mut env, (), |env| {
+            let Some(emu) = handle_mut(handle) else { return };
+            let arr = unsafe { jni::objects::JByteArray::from_raw(env, data) };
+            if let Ok(bytes) = env.convert_byte_array(&arr) {
+                emu.load_save_data(&bytes);
+            }
+        })
     }
 
     /// A save state, taken right now: the whole machine, not just the
     /// cartridge's own save file.
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_stateSave<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
     ) -> jbyteArray {
-        let data = handle_ref(handle).map_or(alloc::vec::Vec::new(), |emu| emu.save_state());
-        let signed: alloc::vec::Vec<i8> = data.iter().map(|&b| b as i8).collect();
-        match env.new_byte_array(signed.len() as i32) {
-            Ok(arr) => {
-                let _ = env.set_byte_array_region(&arr, 0, &signed);
-                arr.into_raw()
-            }
-            Err(_) => core::ptr::null_mut(),
-        }
+        in_env(&mut env, core::ptr::null_mut(), |env| {
+            let data = handle_ref(handle).map_or(alloc::vec::Vec::new(), |emu| emu.save_state());
+            byte_array(env, &data)
+        })
     }
 
     /// Restore a save state taken earlier. `false` if it was not one this
     /// cartridge can use.
     #[no_mangle]
     pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_stateLoad<'local>(
-        env: JNIEnv<'local>,
+        mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
         data: jbyteArray,
     ) -> jboolean {
-        let Some(emu) = handle_mut(handle) else { return 0 };
-        let arr = unsafe { jni::objects::JByteArray::from_raw(data) };
-        match env.convert_byte_array(&arr) {
-            Ok(bytes) if emu.load_state(&bytes) => 1,
-            _ => 0,
-        }
+        // `jboolean` is a real `bool` as of jni 0.22, not a byte.
+        in_env(&mut env, false, |env| {
+            let Some(emu) = handle_mut(handle) else { return false };
+            let arr = unsafe { jni::objects::JByteArray::from_raw(env, data) };
+            match env.convert_byte_array(&arr) {
+                Ok(bytes) => emu.load_state(&bytes),
+                Err(_) => false,
+            }
+        })
     }
 }

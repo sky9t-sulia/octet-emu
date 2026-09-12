@@ -7,31 +7,9 @@ impl Cpu {
     /// One line per opcode, so the dispatch reads as the table it is.
     #[rustfmt::skip]
     pub(super) fn execute(&mut self, bus: &mut impl CpuBus, opcode: u8) {
-        // Fetch the operand of a value-consuming instruction.
-        macro_rules! val {
-            (imm) => { self.fetch(bus) };
-            (zp) => {{ let a = self.addr_zp(bus); self.read(bus, a) }};
-            (zpx) => {{ let a = self.addr_zp_idx(bus, self.x); self.read(bus, a) }};
-            (zpy) => {{ let a = self.addr_zp_idx(bus, self.y); self.read(bus, a) }};
-            (abs) => {{ let a = self.addr_abs(bus); self.read(bus, a) }};
-            (absx) => {{ let a = self.addr_abs_idx_read(bus, self.x); self.read(bus, a) }};
-            (absy) => {{ let a = self.addr_abs_idx_read(bus, self.y); self.read(bus, a) }};
-            (indx) => {{ let a = self.addr_ind_x(bus); self.read(bus, a) }};
-            (indy) => {{ let a = self.addr_ind_y_read(bus); self.read(bus, a) }};
-        }
-
-        // Compute the effective address of a store or read-modify-write, which
-        // always pays the index fixup cycle.
-        macro_rules! addr {
-            (zp) => { self.addr_zp(bus) };
-            (zpx) => { self.addr_zp_idx(bus, self.x) };
-            (zpy) => { self.addr_zp_idx(bus, self.y) };
-            (abs) => { self.addr_abs(bus) };
-            (absx) => { self.addr_abs_idx_write(bus, self.x) };
-            (absy) => { self.addr_abs_idx_write(bus, self.y) };
-            (indx) => { self.addr_ind_x(bus) };
-            (indy) => { self.addr_ind_y_write(bus) };
-        }
+        // The two tables share their addressing; see `val_from` in the parent.
+        macro_rules! val { ($m:ident) => { val_from!(self, bus, $m) }; }
+        macro_rules! addr { ($m:ident) => { addr_from!(self, bus, $m) }; }
 
         /// Two-cycle instruction: the second cycle is a discarded fetch at PC.
         macro_rules! implied {

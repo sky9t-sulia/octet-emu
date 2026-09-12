@@ -9,27 +9,9 @@ impl Cpu {
     /// use them, so they are here.
     #[rustfmt::skip]
     pub(super) fn execute_undocumented(&mut self, bus: &mut impl CpuBus, opcode: u8) {
-        macro_rules! val {
-            (imm) => { self.fetch(bus) };
-            (zp) => {{ let a = self.addr_zp(bus); self.read(bus, a) }};
-            (zpx) => {{ let a = self.addr_zp_idx(bus, self.x); self.read(bus, a) }};
-            (zpy) => {{ let a = self.addr_zp_idx(bus, self.y); self.read(bus, a) }};
-            (abs) => {{ let a = self.addr_abs(bus); self.read(bus, a) }};
-            (absx) => {{ let a = self.addr_abs_idx_read(bus, self.x); self.read(bus, a) }};
-            (absy) => {{ let a = self.addr_abs_idx_read(bus, self.y); self.read(bus, a) }};
-            (indx) => {{ let a = self.addr_ind_x(bus); self.read(bus, a) }};
-            (indy) => {{ let a = self.addr_ind_y_read(bus); self.read(bus, a) }};
-        }
-        macro_rules! addr {
-            (zp) => { self.addr_zp(bus) };
-            (zpx) => { self.addr_zp_idx(bus, self.x) };
-            (zpy) => { self.addr_zp_idx(bus, self.y) };
-            (abs) => { self.addr_abs(bus) };
-            (absx) => { self.addr_abs_idx_write(bus, self.x) };
-            (absy) => { self.addr_abs_idx_write(bus, self.y) };
-            (indx) => { self.addr_ind_x(bus) };
-            (indy) => { self.addr_ind_y_write(bus) };
-        }
+        // The two tables share their addressing; see `val_from` in the parent.
+        macro_rules! val { ($m:ident) => { val_from!(self, bus, $m) }; }
+        macro_rules! addr { ($m:ident) => { addr_from!(self, bus, $m) }; }
 
         match opcode {
             // ---- NOPs with operands (they still perform their bus reads) ----
