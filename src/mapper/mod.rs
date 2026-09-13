@@ -7,6 +7,7 @@ use crate::cartridge::{Cartridge, Mirroring};
 
 mod action53;
 mod axrom;
+mod bandai;
 mod banks;
 mod bf9096;
 mod bf909x;
@@ -157,6 +158,10 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
         9 | 10 => Ok(Box::new(mmc2::Mmc2::new(cart, id))),
         7 => Ok(Box::new(axrom::AxRom::new(cart))),
         11 => Ok(Box::new(colordreams::ColorDreams::new(cart))),
+        16 | 159 => {
+            let sub = cart.submapper;
+            Ok(Box::new(bandai::Bandai::new(cart, sub)))
+        }
         21 | 22 | 23 | 25 | 27 | 183 => {
             let sub = cart.submapper;
             Ok(Box::new(vrc2_4::Vrc2_4::new(cart, id, sub)))
