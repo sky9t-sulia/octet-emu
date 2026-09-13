@@ -125,8 +125,10 @@ impl Mmc3 {
             let ones = [nt(self.regs[2]), nt(self.regs[3]), nt(self.regs[4]), nt(self.regs[5])];
             if inverted {
                 self.chr_nametables = [ones[0], ones[1], ones[2], ones[3], a, a, b, b];
+                self.mirroring = Mirroring::Quadrants([ones[0], ones[1], ones[2], ones[3]]);
             } else {
                 self.chr_nametables = [a, a, b, b, ones[0], ones[1], ones[2], ones[3]];
+                self.mirroring = Mirroring::Quadrants([a, a, b, b]);
             }
         }
 

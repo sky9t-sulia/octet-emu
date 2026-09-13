@@ -238,6 +238,7 @@ impl Ppu {
             // Without cartridge VRAM, four-screen falls back to the console's
             // two banks; real four-screen mappers intercept before this.
             Mirroring::FourScreen => table & 1,
+            Mirroring::Quadrants(which) => which[table] as usize,
         };
         bank * 0x400 + offset
     }

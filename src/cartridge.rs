@@ -14,6 +14,10 @@ pub enum Mirroring {
     SingleScreenA,
     SingleScreenB,
     FourScreen,
+    /// One console nametable per quadrant, chosen by the cartridge. Boards
+    /// that wire a CHR bank line to CIRAM A10 — the TxSROM and the Namcot
+    /// 3305 — pick the screen the same way they pick a pattern bank.
+    Quadrants([bool; 4]),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

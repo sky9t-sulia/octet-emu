@@ -8,17 +8,28 @@ use crate::cartridge::{Cartridge, Mirroring};
 mod action53;
 mod axrom;
 mod banks;
+mod bf9096;
+mod bf909x;
 mod bnrom;
 mod cnrom;
 mod colordreams;
+mod dxrom;
 mod fme7;
 mod gxrom;
+mod h3001;
 mod mmc1;
+mod mmc2;
 mod mmc3;
 mod mmc5;
 mod nrom;
+mod rambo1;
+mod sunsoft3;
+mod sunsoft4;
+mod taito;
 mod unrom180;
 mod uxrom;
+mod vrc1;
+mod vrc3;
 mod vrc2_4;
 
 pub use banks::Banks;
@@ -143,6 +154,7 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
             Ok(Box::new(mmc3::Mmc3::new(cart, id, sub)))
         }
         5 => Ok(Box::new(mmc5::Mmc5::new(cart))),
+        9 | 10 => Ok(Box::new(mmc2::Mmc2::new(cart, id))),
         7 => Ok(Box::new(axrom::AxRom::new(cart))),
         11 => Ok(Box::new(colordreams::ColorDreams::new(cart))),
         21 | 22 | 23 | 25 | 27 | 183 => {
@@ -150,10 +162,23 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
             Ok(Box::new(vrc2_4::Vrc2_4::new(cart, id, sub)))
         }
         28 => Ok(Box::new(action53::Action53::new(cart))),
+        33 | 48 => Ok(Box::new(taito::Taito::new(cart, id))),
         34 => Ok(Box::new(bnrom::BnRom::new(cart))),
+        64 => Ok(Box::new(rambo1::Rambo1::new(cart))),
+        65 => Ok(Box::new(h3001::H3001::new(cart))),
         66 => Ok(Box::new(gxrom::GxRom::new(cart))),
+        67 => Ok(Box::new(sunsoft3::Sunsoft3::new(cart))),
+        68 => Ok(Box::new(sunsoft4::Sunsoft4::new(cart))),
         69 => Ok(Box::new(fme7::Fme7::new(cart))),
+        73 => Ok(Box::new(vrc3::Vrc3::new(cart))),
+        75 => Ok(Box::new(vrc1::Vrc1::new(cart))),
+        71 => Ok(Box::new(bf909x::Bf909x::new(cart))),
         180 => Ok(Box::new(unrom180::UnRom180::new(cart))),
+        88 | 95 | 154 | 206 => Ok(Box::new(dxrom::DxRom::new(cart, id))),
+        232 => {
+            let sub = cart.submapper;
+            Ok(Box::new(bf9096::Bf9096::new(cart, sub)))
+        }
         _ => Err(UnsupportedMapper(id)),
     }
 }
