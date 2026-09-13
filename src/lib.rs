@@ -11,8 +11,7 @@
 //! let mut nes = Nes::new(cart).unwrap();
 //! nes.set_button(0, Button::Start, true);
 //! nes.run_frame();
-//! let mut pixels = vec![0u8; 256 * 240 * 4];
-//! nes.write_rgba(&mut pixels); // packed RGBA8888
+//! let frame = nes.color_ids(); // one identity a pixel; expand with `palette_table`
 //! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -219,34 +218,12 @@ impl Nes {
         self.cpu.step(&mut self.bus);
     }
 
-    /// The completed frame, four bytes a pixel: red, green, blue, and an
-    /// alpha byte always `0xff` — padding, for a texture upload's alignment.
-    ///
-    /// `out` needs `FRAME_WIDTH * FRAME_HEIGHT * 4` bytes. Returns how many
-    /// were written, or `None` if it is short. A front end that would rather
-    /// expand the picture itself should take [`Nes::color_ids`] instead;
-    /// nothing here expands unless this is called.
-    pub fn write_rgba(&self, out: &mut [u8]) -> Option<usize> {
-        let needed = FRAME_WIDTH * FRAME_HEIGHT * 4;
-        if out.len() < needed {
-            return None;
-        }
-        for (id, px) in self.color_ids().iter().zip(out.chunks_exact_mut(4)) {
-            let rgb = expand(*id);
-            px[0] = (rgb >> 16) as u8;
-            px[1] = (rgb >> 8) as u8;
-            px[2] = rgb as u8;
-            px[3] = 0xff;
-        }
-        Some(needed)
-    }
-
     /// The completed frame as the PPU's own color identities: the six-bit
     /// palette entry in the low bits, the three emphasis bits above it.
     ///
-    /// The same picture [`Nes::framebuffer`] gives, in the form the hardware
-    /// actually produced. A front end holding the NTSC palette can expand
-    /// these itself and carry a quarter of the bytes.
+    /// This is the picture, and the only form of it: what the chip put out,
+    /// before anyone decided what colour that is. Expand it with
+    /// [`palette_table`], or rebuild the signal from it and decode that.
     pub fn color_ids(&self) -> &[u16; FRAME_WIDTH * FRAME_HEIGHT] {
         self.bus.ppu.color_ids()
     }
@@ -809,51 +786,6 @@ mod tests {
             mirroring: Mirroring::Horizontal,
             tv: TvSystem::Ntsc,
         }
-    }
-
-    /// `write_rgba` must lay the picture out the way a caller expects it.
-    ///
-    /// This replaced a comparison between two planes: the PPU used to keep
-    /// the picture as RGB as well as identities, and the test checked they
-    /// agreed. There is one representation now, so what is left to get wrong
-    /// is the boundary — the byte order, the alpha, and refusing a buffer too
-    /// small rather than writing past it.
-    #[test]
-    fn write_rgba_fills_the_buffer_it_is_given() {
-        // Rendering on, so the picture is not all backdrop.
-        let code = [
-            0xa9, 0x3f, 0x8d, 0x06, 0x20, // LDA #$3F : STA $2006
-            0xa9, 0x00, 0x8d, 0x06, 0x20, // LDA #$00 : STA $2006
-            0xa2, 0x00, //                   LDX #$00
-            0x8e, 0x07, 0x20, //           - STX $2007
-            0xe8, //                       | INX
-            0xe0, 0x20, //                 | CPX #$20
-            0xd0, 0xf8, //                 - BNE back to STX
-            0xa9, 0x1e, 0x8d, 0x01, 0x20, // LDA #$1E : STA $2001
-            0x4c, 0x19, 0xc0, //             JMP $C019 — spin
-        ];
-        let mut nes = Nes::new(cart_with(&code)).unwrap();
-        nes.run_frame();
-        nes.run_frame();
-
-        let needed = FRAME_WIDTH * FRAME_HEIGHT * 4;
-        let mut out = vec![0u8; needed];
-        assert_eq!(nes.write_rgba(&mut out), Some(needed));
-
-        // Every pixel is its identity, expanded, with an opaque alpha.
-        for (id, px) in nes.color_ids().iter().zip(out.chunks_exact(4)) {
-            let rgb = expand(*id);
-            assert_eq!(
-                (px[0], px[1], px[2], px[3]),
-                ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8, 0xff),
-                "identity {id:#05x} came out wrong",
-            );
-        }
-
-        // A buffer one byte short is refused rather than half filled.
-        let mut short = vec![0u8; needed - 1];
-        assert_eq!(nes.write_rgba(&mut short), None);
-        assert!(short.iter().all(|b| *b == 0), "nothing should have been written");
     }
 
     /// The table a front end is handed must agree with expanding one at a time.

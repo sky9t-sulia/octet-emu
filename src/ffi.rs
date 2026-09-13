@@ -121,8 +121,41 @@ impl Emu {
     }
 
     /// The finished picture, one `u32` per pixel as `0x00RRGGBB`.
-    pub fn write_rgba(&self, out: &mut [u8]) -> Option<usize> {
-        self.nes.write_rgba(out)
+    /// The frame as the PPU's own identities, packed for a texture: the
+    /// palette entry in the first byte of each pixel, the emphasis in the
+    /// second. A front end that expands on its graphics card wants this rather
+    /// A quarter of the work of expanding it here, and the only form the
+    /// television signal can be rebuilt from.
+    pub fn write_cells(&self, out: &mut [u8]) -> Option<usize> {
+        let ids = self.nes.color_ids();
+        let needed = ids.len() * 4;
+        if out.len() < needed {
+            return None;
+        }
+        for (id, cell) in ids.iter().zip(out.chunks_exact_mut(4)) {
+            cell[0] = (id & 0x3f) as u8;
+            cell[1] = ((id >> 6) & 7) as u8;
+            cell[2] = 0;
+            cell[3] = 0xff;
+        }
+        Some(needed)
+    }
+
+    /// Every colour the PPU can emit, emphasis folded in, as the same packing.
+    /// Handed over once so the card can look them up itself.
+    pub fn palette(out: &mut [u8]) -> Option<usize> {
+        let table = crate::palette_table();
+        let needed = table.len() * 4;
+        if out.len() < needed {
+            return None;
+        }
+        for (colour, cell) in table.iter().zip(out.chunks_exact_mut(4)) {
+            cell[0] = (colour >> 16) as u8;
+            cell[1] = (colour >> 8) as u8;
+            cell[2] = *colour as u8;
+            cell[3] = 0xff;
+        }
+        Some(needed)
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -235,19 +268,35 @@ pub unsafe extern "C" fn octet_emu_run_frame(emu: *mut Emu) {
     }
 }
 
-/// The picture, [`octet_emu_width`] by [`octet_emu_height`] pixels of `0x00RRGGBB`.
-/// The pointer stays valid until the handle is freed. Null for a null handle.
+/// The picture as the PPU's own identities, [`octet_emu_width`] by
+/// [`octet_emu_height`] of them, four bytes each: the palette entry, the
+/// emphasis, a spare, and an opaque alpha. Nothing here decides what colour an
+/// identity is — [`octet_emu_palette`] hands over the table for that, and a
+/// front end that wants what a television did rebuilds the signal instead.
 ///
 /// # Safety
 /// `emu` must be null or a live handle.
 #[no_mangle]
-pub unsafe extern "C" fn octet_emu_pixels(emu: *const Emu, out: *mut u8, cap: usize) -> usize {
+pub unsafe extern "C" fn octet_emu_cells(emu: *const Emu, out: *mut u8, cap: usize) -> usize {
     let Some(emu) = (unsafe { emu.as_ref() }) else { return 0 };
     if out.is_null() {
         return 0;
     }
     let dst = unsafe { core::slice::from_raw_parts_mut(out, cap) };
-    emu.write_rgba(dst).unwrap_or(0)
+    emu.write_cells(dst).unwrap_or(0)
+}
+
+/// Every colour the PPU can emit, 512 of them, four bytes each. Asked for once.
+///
+/// # Safety
+/// `out` must point to `cap` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn octet_emu_palette(out: *mut u8, cap: usize) -> usize {
+    if out.is_null() {
+        return 0;
+    }
+    let dst = unsafe { core::slice::from_raw_parts_mut(out, cap) };
+    Emu::palette(dst).unwrap_or(0)
 }
 
 #[no_mangle]
@@ -481,11 +530,10 @@ mod jni_bridge {
     }
 
     /// Fills `out` (a direct `ByteBuffer` of `width*height*4` bytes) with the
-    /// picture as RGBA8888 — what the GL side uploads as a texture untouched.
-    /// The core's own pixels are `0x00RRGGBB`; the alpha byte is forced
-    /// opaque going out, since the core never sets it.
+    /// picture as the PPU's own identities. Nothing here says what colour one
+    /// is: the card does that, from the table [`Emu::palette`] hands over.
     #[no_mangle]
-    pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_pixels<'local>(
+    pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_cells<'local>(
         mut env: EnvUnowned<'local>,
         _class: JClass<'local>,
         handle: jlong,
@@ -496,9 +544,22 @@ mod jni_bridge {
             let Ok(ptr) = env.get_direct_buffer_address(&out) else { return };
             let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return };
             let dst = unsafe { core::slice::from_raw_parts_mut(ptr, cap) };
-            // Expanded straight into the buffer Java handed over: no
-            // intermediate picture, and the same loop that was here before.
-            emu.write_rgba(dst);
+            emu.write_cells(dst);
+        })
+    }
+
+    /// The palette, asked for once when the screen is set up.
+    #[no_mangle]
+    pub extern "system" fn Java_io_github_sky9t_1sulia_octet_Emulator_palette<'local>(
+        mut env: EnvUnowned<'local>,
+        _class: JClass<'local>,
+        out: JByteBuffer<'local>,
+    ) {
+        in_env(&mut env, (), |env| {
+            let Ok(ptr) = env.get_direct_buffer_address(&out) else { return };
+            let Ok(cap) = env.get_direct_buffer_capacity(&out) else { return };
+            let dst = unsafe { core::slice::from_raw_parts_mut(ptr, cap) };
+            Emu::palette(dst);
         })
     }
 
