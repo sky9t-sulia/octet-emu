@@ -119,6 +119,19 @@ pub struct Ppu {
     #[cfg_attr(feature = "snapshot", serde(with = "crate::snapshot::bytes"))]
     vram: [u8; 0x800],
     palette: [u8; 32],
+    /// Whether A12 of the PPU address bus is high, and how many dots it has
+    /// spent low if it is not. A cartridge that counts A12 edges is told only
+    /// about the rises, so the dots in between cost it nothing.
+    a12_level: bool,
+    a12_low_dots: u16,
+    /// Which of the two nametables each quadrant reads, as a byte offset into
+    /// [`Ppu::vram`]. Taken from the cartridge when it is written to.
+    nt_bank: [usize; 4],
+    /// Each of the thirty-two palette entries as it finally reaches the
+    /// picture: the mirrors resolved, greyscale applied, and the emphasis
+    /// bits already above it. Built when the palette or `$2001` changes,
+    /// which is a handful of times a frame, rather than at every pixel.
+    emitted: [u16; 32],
     #[cfg_attr(feature = "snapshot", serde(with = "crate::snapshot::bytes"))]
     pub oam: [u8; 256],
     /// The eight sprites selected for the next scanline.
@@ -141,10 +154,11 @@ pub struct Ppu {
     at_latch: u8,
     bg_lo_latch: u8,
     bg_hi_latch: u8,
-    bg_shift_lo: u16,
-    bg_shift_hi: u16,
-    at_shift_lo: u16,
-    at_shift_hi: u16,
+    /// The four background shift registers in one word, sixteen bits each:
+    /// the low half of the pattern at the bottom, then its high half, then
+    /// the two attribute bits. They are only ever shifted together and read
+    /// together, and one word is one shift and one load where four were.
+    bg_shifters: u64,
 
     // ---- Sprite pipeline ----
     /// Sprite evaluation progress: OAM sprite index, byte index within it,
@@ -236,6 +250,10 @@ pub struct Ppu {
     /// The processor lets go of the byte as `M2` falls; the PPU takes it in on
     /// its own next edge, so nothing a write does is felt on the dot it
     /// arrived on.
+    /// Whether either of the two below is holding something. A dot asks this
+    /// one flag rather than opening both boxes, and on all but a handful of
+    /// dots a frame they are empty.
+    pending_any: bool,
     pending_write: Option<(u16, u8, u8)>,
     /// A `$2007` access's step of the scroll counters, waiting the same way.
     pending_increment: Option<u8>,
@@ -310,6 +328,10 @@ impl Ppu {
             read_buffer: 0,
             vram: [0; 0x800],
             palette: [0; 32],
+            a12_level: false,
+            a12_low_dots: 0,
+            nt_bank: [0; 4],
+            emitted: [0; 32],
             oam: [0; 256],
             secondary_oam: [0xff; 32],
             scanline: 0,
@@ -323,10 +345,7 @@ impl Ppu {
             at_latch: 0,
             bg_lo_latch: 0,
             bg_hi_latch: 0,
-            bg_shift_lo: 0,
-            bg_shift_hi: 0,
-            at_shift_lo: 0,
-            at_shift_hi: 0,
+            bg_shifters: 0,
             eval_n: 0,
             eval_m: 0,
             eval_done: true,
@@ -354,6 +373,7 @@ impl Ppu {
             vbl_latch: 0,
             zero_hit_pending: false,
             oam_corrupt_row: None,
+            pending_any: false,
             pending_write: None,
             pending_increment: None,
             oam_buffer: 0xff,
@@ -373,6 +393,7 @@ impl Ppu {
         // but leaves VRAM, OAM and the palette alone.
         self.ctrl = 0;
         self.mask = 0;
+        self.refresh_emitted();
         self.rendering_enabled = false;
         self.prev_rendering_enabled = false;
         self.need_state_update = false;

@@ -115,6 +115,7 @@ impl Ppu {
         self.drive_bus(val);
         if addr & 7 == 6 {
             self.pending_write = Some((addr, val, ADDR_WRITE_DELAY));
+            self.pending_any = true;
         } else {
             self.apply_register_write(addr, val, mapper);
         }
@@ -134,6 +135,7 @@ impl Ppu {
         }
 
         let Some((addr, val, left)) = self.pending_write else {
+            self.pending_any = self.pending_increment.is_some();
             return;
         };
         if left > 1 {
@@ -141,11 +143,13 @@ impl Ppu {
             return;
         }
         self.pending_write = None;
+        self.pending_any = self.pending_increment.is_some();
         self.apply_register_write(addr, val, mapper);
     }
 
     fn apply_register_write(&mut self, addr: u16, val: u8, mapper: &mut dyn Mapper) {
         mapper.ppu_register_write(0x2000 | (addr & 7), val);
+        self.set_mirroring(mapper.mirroring());
         match addr & 7 {
             0 => {
                 self.ctrl = val;
@@ -155,6 +159,7 @@ impl Ppu {
             }
             1 => {
                 self.mask = val;
+                self.refresh_emitted();
                 if self.rendering_enabled != self.mask_rendering() {
                     self.need_state_update = true;
                 }
@@ -215,6 +220,7 @@ impl Ppu {
         // lands on still runs off the address it had.
         if self.mask_rendering() && self.scanline < 240 {
             self.pending_increment = Some(ADDR_WRITE_DELAY);
+            self.pending_any = true;
             return;
         } else {
             let step = if self.ctrl & 0x04 != 0 { 32 } else { 1 };
@@ -226,21 +232,32 @@ impl Ppu {
 
     // ---- PPU bus --------------------------------------------------------
 
-    fn nametable_index(&self, addr: u16, mirroring: Mirroring) -> usize {
+    /// Work out which of the console's two nametables each of the four
+    /// quadrants is wired to, and remember it.
+    ///
+    /// The cartridge decides this and only ever changes its mind when it is
+    /// written to, so the answer is taken there rather than asked of it at
+    /// every read of a nametable.
+    pub fn set_mirroring(&mut self, mirroring: Mirroring) {
+        for table in 0..4 {
+            let bank = match mirroring {
+                Mirroring::Horizontal => table >> 1,
+                Mirroring::Vertical => table & 1,
+                Mirroring::SingleScreenA => 0,
+                Mirroring::SingleScreenB => 1,
+                // Without cartridge VRAM, four-screen falls back to the
+                // console's two banks; real four-screen mappers intercept
+                // before this.
+                Mirroring::FourScreen => table & 1,
+                Mirroring::Quadrants(which) => which[table] as usize,
+            };
+            self.nt_bank[table] = bank * 0x400;
+        }
+    }
+
+    fn nametable_index(&self, addr: u16) -> usize {
         let addr = (addr - 0x2000) & 0x0fff;
-        let table = (addr / 0x400) as usize;
-        let offset = (addr % 0x400) as usize;
-        let bank = match mirroring {
-            Mirroring::Horizontal => table >> 1,
-            Mirroring::Vertical => table & 1,
-            Mirroring::SingleScreenA => 0,
-            Mirroring::SingleScreenB => 1,
-            // Without cartridge VRAM, four-screen falls back to the console's
-            // two banks; real four-screen mappers intercept before this.
-            Mirroring::FourScreen => table & 1,
-            Mirroring::Quadrants(which) => which[table] as usize,
-        };
-        bank * 0x400 + offset
+        self.nt_bank[(addr >> 10) as usize] + (addr & 0x3ff) as usize
     }
 
     /// Put an address on the bus and latch its low byte: the first dot of access. 
@@ -284,7 +301,7 @@ impl Ppu {
                         return val;
                     }
                 }
-                self.vram[self.nametable_index(addr, mapper.mirroring())]
+                self.vram[self.nametable_index(addr)]
             }
             _ => self.read_palette(addr),
         }
@@ -300,7 +317,7 @@ impl Ppu {
                 if self.mapper_serves_nametables && mapper.write_nametable(addr, val) {
                     return;
                 }
-                let idx = self.nametable_index(addr, mapper.mirroring());
+                let idx = self.nametable_index(addr);
                 self.vram[idx] = val;
             }
             _ => self.write_palette(addr, val),
@@ -323,5 +340,19 @@ impl Ppu {
 
     fn write_palette(&mut self, addr: u16, val: u8) {
         self.palette[Self::palette_index(addr)] = val & 0x3f;
+        self.refresh_emitted();
+    }
+
+    /// Work out what every palette entry now emits. See the field.
+    pub(super) fn refresh_emitted(&mut self) {
+        let grey = self.mask & 0x01 != 0;
+        let emphasis = (self.mask as u16 >> 5) << 6;
+        for i in 0..32 {
+            let mut val = self.palette[Self::palette_index(0x3f00 + i as u16)];
+            if grey {
+                val &= 0x30;
+            }
+            self.emitted[i] = (val as u16 & 0x3f) | emphasis;
+        }
     }
 }

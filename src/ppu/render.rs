@@ -9,16 +9,18 @@ impl Ppu {
         if self.mask & 0x08 == 0 {
             return (0, false);
         }
-        // Fine X selects which of the sixteen shifted bits is on screen.
-        let bit = 15 - self.x as u16;
-        let lo = ((self.bg_shift_lo >> bit) & 1) as u8;
-        let hi = ((self.bg_shift_hi >> bit) & 1) as u8;
+        // Fine X selects which of the sixteen shifted bits is on screen. One
+        // shift of the whole word brings that bit of every lane down to the
+        // bottom of its own lane.
+        let shifted = self.bg_shifters >> (15 - self.x as u32);
+        let lo = (shifted & 1) as u8;
+        let hi = ((shifted >> 16) & 1) as u8;
         let pattern = (hi << 1) | lo;
         if pattern == 0 {
             return (0, false);
         }
-        let pal_lo = ((self.at_shift_lo >> bit) & 1) as u8;
-        let pal_hi = ((self.at_shift_hi >> bit) & 1) as u8;
+        let pal_lo = ((shifted >> 32) & 1) as u8;
+        let pal_hi = ((shifted >> 48) & 1) as u8;
         let palette = (pal_hi << 1) | pal_lo;
         (palette * 4 + pattern, true)
     }
@@ -83,12 +85,10 @@ impl Ppu {
             }
         };
 
-        // `read_palette` has already folded in greyscale, so this is the
-        // color as the PPU would emit it, with the emphasis bits above.
-        let color = self.read_palette(0x3f00 + index as u16) as usize & 0x3f;
-        let emphasis = self.mask >> 5;
+        // Greyscale, the palette's mirrors and the emphasis bits are already
+        // in the table, so this is the color as the PPU emits it.
         self.color_ids[y as usize * FRAME_WIDTH + x as usize] =
-            color as u16 | ((emphasis as u16) << 6);
+            self.emitted[index as usize & 0x1f];
     }
 }
 

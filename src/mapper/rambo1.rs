@@ -32,9 +32,6 @@ pub struct Rambo1 {
     /// Divides the processor's clock by four for that mode.
     prescaler: u8,
 
-    /// A12 filtering for the other mode, as on the MMC3.
-    a12_low_cycles: u16,
-    prev_a12: bool,
 }
 
 impl Rambo1 {
@@ -52,8 +49,6 @@ impl Rambo1 {
             irq_reload: false,
             cycle_mode: false,
             prescaler: 0,
-            a12_low_cycles: 0,
-            prev_a12: false,
         };
         board.sync();
         board
@@ -191,20 +186,12 @@ impl Mapper for Rambo1 {
         true
     }
 
-    fn tick_ppu_addr(&mut self, addr: u16) {
-        if self.cycle_mode {
-            return;
+    fn a12_rose(&mut self, low_dots: u16) {
+        // Ten PPU cycles low before a rise counts. That rejects the
+        // four-cycle dips in the sprite fetch phase: one clock per line.
+        if !self.cycle_mode && low_dots >= 10 {
+            self.clock_irq();
         }
-        let a12 = addr & 0x1000 != 0;
-        if !a12 {
-            self.a12_low_cycles = self.a12_low_cycles.saturating_add(1);
-        } else {
-            if !self.prev_a12 && self.a12_low_cycles >= 10 {
-                self.clock_irq();
-            }
-            self.a12_low_cycles = 0;
-        }
-        self.prev_a12 = a12;
     }
 
     fn nvram(&self) -> &[u8] {

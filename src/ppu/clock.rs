@@ -31,7 +31,9 @@ impl Ppu {
 
     fn dot_tick(&mut self, mapper: &mut dyn Mapper) {
         // Whatever the processor wrote on the dot just gone is felt now.
-        self.apply_write(mapper);
+        if self.pending_any {
+            self.apply_write(mapper);
+        }
 
         let pre_render = self.scanline == -1;
         let visible = self.scanline >= 0 && self.scanline < 240;
@@ -195,8 +197,20 @@ impl Ppu {
             }
         }
 
+        // A12 is sampled once per dot, not once per fetch, but the cartridge
+        // only ever acts on a rise -- about once a tile -- so the dots it
+        // spends low are counted here and handed over with the rise.
         if self.mapper_watches_bus {
-            mapper.tick_ppu_addr(self.bus_addr);
+            let high = self.bus_addr & 0x1000 != 0;
+            if high {
+                if !self.a12_level {
+                    mapper.a12_rose(self.a12_low_dots);
+                }
+                self.a12_low_dots = 0;
+            } else {
+                self.a12_low_dots = self.a12_low_dots.saturating_add(1);
+            }
+            self.a12_level = high;
         }
         self.advance_dot();
     }

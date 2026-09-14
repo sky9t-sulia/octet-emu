@@ -29,9 +29,6 @@ pub struct Mmc3 {
     irq_enabled: bool,
     irq_flag: bool,
 
-    /// A12 filtering state: how long the line has been low.
-    a12_low_cycles: u16,
-    prev_a12: bool,
 
     /// Nametable select per 1 KiB region, used only by TxSROM.
     chr_nametables: [bool; 8],
@@ -85,8 +82,6 @@ impl Mmc3 {
             irq_reload: false,
             irq_enabled: false,
             irq_flag: false,
-            a12_low_cycles: 0,
-            prev_a12: false,
             chr_nametables: [false; 8],
             mmc6_ram: [0; 0x400],
             mmc6_perms: 0,
@@ -278,19 +273,12 @@ impl Mapper for Mmc3 {
         true
     }
 
-    fn tick_ppu_addr(&mut self, addr: u16) {
-        let a12 = addr & 0x1000 != 0;
-        if !a12 {
-            self.a12_low_cycles = self.a12_low_cycles.saturating_add(1);
-        } else {
-            // Ten PPU cycles low before a rise counts. That rejects the
-            // four-cycle dips in the sprite fetch phase: one clock per line.
-            if !self.prev_a12 && self.a12_low_cycles >= 10 {
-                self.clock_irq();
-            }
-            self.a12_low_cycles = 0;
+    fn a12_rose(&mut self, low_dots: u16) {
+        // Ten PPU cycles low before a rise counts. That rejects the
+        // four-cycle dips in the sprite fetch phase: one clock per line.
+        if low_dots >= 10 {
+            self.clock_irq();
         }
-        self.prev_a12 = a12;
     }
 
     fn nvram(&self) -> &[u8] {

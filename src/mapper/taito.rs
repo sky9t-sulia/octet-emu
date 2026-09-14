@@ -27,8 +27,6 @@ pub struct Taito {
     irq_reload: bool,
     irq_enabled: bool,
     irq_flag: bool,
-    a12_low_cycles: u16,
-    prev_a12: bool,
 }
 
 impl Taito {
@@ -45,8 +43,6 @@ impl Taito {
             irq_reload: false,
             irq_enabled: false,
             irq_flag: false,
-            a12_low_cycles: 0,
-            prev_a12: false,
         };
         board.sync();
         board
@@ -155,17 +151,12 @@ impl Mapper for Taito {
         self.tc0690
     }
 
-    fn tick_ppu_addr(&mut self, addr: u16) {
-        let a12 = addr & 0x1000 != 0;
-        if !a12 {
-            self.a12_low_cycles = self.a12_low_cycles.saturating_add(1);
-        } else {
-            if !self.prev_a12 && self.a12_low_cycles >= 10 {
-                self.clock_irq();
-            }
-            self.a12_low_cycles = 0;
+    fn a12_rose(&mut self, low_dots: u16) {
+        // Ten PPU cycles low before a rise counts. That rejects the
+        // four-cycle dips in the sprite fetch phase: one clock per line.
+        if low_dots >= 10 {
+            self.clock_irq();
         }
-        self.prev_a12 = a12;
     }
 
     fn nvram(&self) -> &[u8] {

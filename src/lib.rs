@@ -193,6 +193,8 @@ impl Nes {
             },
         };
         nes.bus.ppu.set_mapper_interest(watches_bus, serves_nametables);
+        let mirroring = nes.bus.mapper.mirroring();
+        nes.bus.ppu.set_mirroring(mirroring);
         nes.bus.mapper_ticks_cpu = ticks_cpu;
         nes.reset();
         Ok(nes)
@@ -581,7 +583,13 @@ impl Bus {
             0x4016 => self.strobe_pending = Some(val),
             0x4000..=0x4017 => self.apu.write_register(addr, val),
             0x4018..=0x401f => {}
-            _ => self.mapper.cpu_write(addr, val),
+            _ => {
+                self.mapper.cpu_write(addr, val);
+                // The only thing that ever moves the nametable wiring is a
+                // 'write' to the cartridge, so it is taken here rather than
+                // asked for at every read of one.
+                self.ppu.set_mirroring(self.mapper.mirroring());
+            }
         }
     }
 }

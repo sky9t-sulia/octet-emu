@@ -112,9 +112,12 @@ pub trait Mapper: Send {
         false
     }
 
-    /// Called once per PPU dot with whatever address the PPU bus is holding,
-    /// so A12-edge counters (MMC3) can measure how long the line stayed low.
-    fn tick_ppu_addr(&mut self, _addr: u16) {}
+    /// Called when A12 on the PPU bus has gone from low to high, with how
+    /// many dots it spent low first. That is the whole of what an A12-edge
+    /// counter reacts to, and it happens about once a tile, so the counting
+    /// of the low dots is left to the PPU rather than asked of the cartridge
+    /// at every one of them.
+    fn a12_rose(&mut self, _low_dots: u16) {}
 
     /// Called for each real PPU bus read, unlike [`Mapper::tick_ppu_addr`]:
     /// the MMC5 infers its position from the pattern of reads.
