@@ -564,6 +564,14 @@ pub struct Apu {
     step: usize,
     /// CPU cycles elapsed within the current sequence.
     step_cycle: i32,
+    /// Whether a 'write' is waiting to reach a length counter. Nothing else
+    /// queues one, so between writes the four counters have nothing to apply
+    /// and are not asked.
+    length_pending: bool,
+    /// The count the current step is due on, taken from the table once when
+    /// the step changes rather than looked up again every cycle. The table
+    /// depends on nothing else that moves.
+    step_due: i32,
     /// 0 for the four-step sequence, 1 for the five-step one.
     step_mode: usize,
     inhibit_irq: bool,
@@ -608,7 +616,7 @@ impl Apu {
             TvSystem::Pal => 1_662_607.0,
             TvSystem::Dendy => 1_773_448.0,
         };
-        Apu {
+        let mut apu = Apu {
             pulse1: Pulse { ones_complement: true, ..Pulse::default() },
             pulse2: Pulse::default(),
             triangle: Triangle::default(),
@@ -619,6 +627,8 @@ impl Apu {
             phase: Phase::Put,
             step: 0,
             step_cycle: 0,
+            length_pending: false,
+            step_due: 0,
             step_mode: 0,
             inhibit_irq: false,
             frame_irq_flag: false,
@@ -632,7 +642,9 @@ impl Apu {
             sample_step: SAMPLE_RATE as f64 / cpu_hz,
             filter: OutputFilter::new(SAMPLE_RATE),
             widen: Widen::new(STEREO_DELAY_MS, SAMPLE_RATE),
-        }
+        };
+        apu.arm_step();
+        apu
     }
 
     /// Soft reset: the sequencer keeps its mode, the triangle's counter is
@@ -667,6 +679,7 @@ impl Apu {
         self.pending_4017 = -1;
         self.write_delay = -1;
         self.block_tick = 0;
+        self.arm_step();
         self.filter.reset();
         self.widen.reset();
     }
@@ -705,29 +718,37 @@ impl Apu {
         self.clock_frame_counter();
         // Queued lengths and halt flags land after the sequencer has had its
         // chance to clock the counters.
-        self.pulse1.length.reload();
-        self.pulse2.length.reload();
-        self.triangle.length.reload();
-        self.noise.length.reload();
+        if self.length_pending {
+            self.pulse1.length.reload();
+            self.pulse2.length.reload();
+            self.triangle.length.reload();
+            self.noise.length.reload();
+            self.length_pending = false;
+        }
         self.accumulate_sample();
     }
 
-    fn clock_frame_counter(&mut self) {
-        // Step boundaries in CPU cycles. The four-step sequence spends its
-        // last three cycles asserting the interrupt, hence six entries.
+    /// Take the count the step now standing is due on. Step boundaries are in
+    /// CPU cycles, and the four-step sequence spends its last three asserting
+    /// the interrupt, hence six entries.
+    fn arm_step(&mut self) {
         let steps: &[i32; 6] = match (self.tv, self.step_mode) {
             (TvSystem::Pal, 0) => &[8313, 16627, 24939, 33252, 33253, 33254],
             (TvSystem::Pal, _) => &[8313, 16627, 24939, 33253, 41565, 41566],
             (_, 0) => &[7457, 14913, 22371, 29828, 29829, 29830],
             (_, _) => &[7457, 14913, 22371, 29829, 37281, 37282],
         };
+        self.step_due = steps[self.step];
+    }
+
+    fn clock_frame_counter(&mut self) {
         // Steps 1 and 4 clock the length counters and sweeps as well as the
         // envelopes; steps 3 and 5 do nothing but carry the interrupt.
         const HALF: [bool; 6] = [false, true, false, false, true, false];
         const TICKS: [bool; 6] = [true, true, true, false, true, false];
 
         self.step_cycle += 1;
-        if self.step_cycle >= steps[self.step] {
+        if self.step_cycle >= self.step_due {
             if self.step_mode == 0 && self.step >= 3 {
                 self.frame_irq_flag = true;
                 if !self.inhibit_irq {
@@ -749,6 +770,7 @@ impl Apu {
                 self.step = 0;
                 self.step_cycle = 0;
             }
+            self.arm_step();
         }
 
         if self.pending_4017 >= 0 {
@@ -759,6 +781,7 @@ impl Apu {
                 self.step = 0;
                 self.step_cycle = 0;
                 self.pending_4017 = -1;
+                self.arm_step();
                 // Selecting the five-step sequence clocks everything at once,
                 // which is how software forces an immediate length update.
                 if self.step_mode == 1 && self.block_tick == 0 {
@@ -821,6 +844,7 @@ impl Apu {
             0x4000 => {
                 self.pulse1.duty = val >> 6;
                 self.pulse1.length.set_halt(val & 0x20 != 0);
+                self.length_pending = true;
                 self.pulse1.envelope.constant = val & 0x10 != 0;
                 self.pulse1.envelope.volume = val & 0x0f;
             }
@@ -838,6 +862,7 @@ impl Apu {
                 self.pulse1.timer_period =
                     (self.pulse1.timer_period & 0x0ff) | (((val & 0x07) as u16) << 8);
                 self.pulse1.length.load(val >> 3);
+                self.length_pending = true;
                 self.pulse1.sequence_pos = 0;
                 self.pulse1.envelope.start = true;
             }
@@ -845,6 +870,7 @@ impl Apu {
             0x4004 => {
                 self.pulse2.duty = val >> 6;
                 self.pulse2.length.set_halt(val & 0x20 != 0);
+                self.length_pending = true;
                 self.pulse2.envelope.constant = val & 0x10 != 0;
                 self.pulse2.envelope.volume = val & 0x0f;
             }
@@ -862,6 +888,7 @@ impl Apu {
                 self.pulse2.timer_period =
                     (self.pulse2.timer_period & 0x0ff) | (((val & 0x07) as u16) << 8);
                 self.pulse2.length.load(val >> 3);
+                self.length_pending = true;
                 self.pulse2.sequence_pos = 0;
                 self.pulse2.envelope.start = true;
             }
@@ -869,6 +896,7 @@ impl Apu {
             0x4008 => {
                 self.triangle.control = val & 0x80 != 0;
                 self.triangle.length.set_halt(val & 0x80 != 0);
+                self.length_pending = true;
                 self.triangle.linear_reload_value = val & 0x7f;
             }
             0x400a => {
@@ -878,11 +906,13 @@ impl Apu {
                 self.triangle.timer_period =
                     (self.triangle.timer_period & 0x0ff) | (((val & 0x07) as u16) << 8);
                 self.triangle.length.load(val >> 3);
+                self.length_pending = true;
                 self.triangle.linear_reload = true;
             }
 
             0x400c => {
                 self.noise.length.set_halt(val & 0x20 != 0);
+                self.length_pending = true;
                 self.noise.envelope.constant = val & 0x10 != 0;
                 self.noise.envelope.volume = val & 0x0f;
             }
@@ -896,6 +926,7 @@ impl Apu {
             }
             0x400f => {
                 self.noise.length.load(val >> 3);
+                self.length_pending = true;
                 self.noise.envelope.start = true;
             }
 

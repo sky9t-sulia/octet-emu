@@ -14,6 +14,24 @@ impl Ppu {
         self.at_shift_hi <<= 1;
     }
 
+    /// What a dot inside a fetch window does: the pixel it can draw, the two
+    /// sets of shifters, and its share of the eight-dot tile fetch.
+    ///
+    /// `draw` is off on the pre-render line, which fetches without drawing,
+    /// and `sprites` is off for the two tiles fetched ahead at the end of a
+    /// line, where the sprite shifters have already been reloaded.
+    #[inline(always)]
+    pub(super) fn fetch_dot(&mut self, mapper: &mut dyn Mapper, draw: bool, sprites: bool) {
+        if draw {
+            self.render_pixel();
+        }
+        self.shift_background();
+        if sprites {
+            self.shift_sprites();
+        }
+        self.background_fetch(mapper);
+    }
+
     /// Move the freshly fetched tile into the low half of the shift registers.
     fn reload_shifters(&mut self) {
         self.bg_shift_lo = (self.bg_shift_lo & 0xff00) | self.bg_lo_latch as u16;

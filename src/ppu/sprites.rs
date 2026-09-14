@@ -272,24 +272,79 @@ impl Ppu {
     /// One dot of the eight shifter counters. A counter that has run out puts
     /// its sprite into the halted state, which is where it is drawn; until
     /// then it only counts, and forced blank does not stop it counting.
+    ///
+    /// All eight count together and none of them is ever loaded while they are
+    /// counting, so rather than step eight numbers down a dot at a time, this
+    /// steps one number up and compares it against the nearest position still
+    /// waiting. A line has 256 counting dots and at most eight arrivals on it,
+    /// so all but eight of them end at that comparison.
     pub(super) fn step_sprite_counters(&mut self) {
         if self.sprite_counting == 0 {
             return;
         }
+        if self.sprite_soonest == SPRITE_UNKNOWN {
+            self.find_soonest_sprite();
+        }
+        self.sprite_elapsed += 1;
+        if self.sprite_elapsed <= self.sprite_soonest {
+            return;
+        }
+
+        // Something is due. Everything at or behind the count arrives at once:
+        // sprites sharing a position, and any left behind by a fetch that did
+        // not reload them.
         for i in 0..8 {
             let bit = 1 << i;
             if self.sprite_counting & bit == 0 {
                 continue;
             }
-            if self.sprite_counter[i] == 0 {
-                self.sprite_counting &= !bit;
-                if self.sprite_lo[i] | self.sprite_hi[i] != 0 {
-                    self.sprite_live |= bit;
-                }
-            } else {
-                self.sprite_counter[i] -= 1;
+            if self.sprite_counter[i] as u16 >= self.sprite_elapsed {
+                continue;
+            }
+            self.sprite_counting &= !bit;
+            if self.sprite_lo[i] | self.sprite_hi[i] != 0 {
+                self.sprite_live |= bit;
             }
         }
+        self.sprite_soonest = SPRITE_UNKNOWN;
+    }
+
+    /// Where the nearest sprite still on its way is going to arrive.
+    fn find_soonest_sprite(&mut self) {
+        let mut soonest = SPRITE_UNKNOWN;
+        for i in 0..8 {
+            if self.sprite_counting & (1 << i) == 0 {
+                continue;
+            }
+            let at = self.sprite_counter[i] as u16;
+            if at < soonest {
+                soonest = at;
+            }
+        }
+        self.sprite_soonest = soonest;
+    }
+
+    /// Take a sprite's position off the bus as the fetch reads it. Every
+    /// counter is measured from the moment the last one was loaded, so loading
+    /// one starts the measurement over.
+    fn load_sprite_counter(&mut self, i: usize, x: u8) {
+        self.sprite_counter[i] = x;
+        self.sprite_elapsed = 0;
+        self.sprite_soonest = SPRITE_UNKNOWN;
+    }
+
+    /// Whatever byte of secondary OAM the unit's address is resting on. Read
+    /// over and over while nothing else is using the memory.
+    #[inline(always)]
+    pub(super) fn peek_secondary_oam(&self) -> u8 {
+        self.secondary_oam[(self.oam2_addr & 0x1f) as usize]
+    }
+
+    /// Set all eight counting again at the end of a line.
+    pub(super) fn restart_sprite_counters(&mut self) {
+        self.sprite_counting = 0xff;
+        self.sprite_live = 0;
+        self.sprite_soonest = SPRITE_UNKNOWN;
     }
 
     /// The pattern shifters of every sprite being drawn, one place along.
@@ -340,9 +395,13 @@ impl Ppu {
             // sprite's dots, and only the last of them moves the address on.
             // The counter takes it each time, so a fetch cut short leaves
             // whatever the line before put there.
-            3 | 5 => self.sprite_counter[i] = self.oam2_peek(),
+            3 | 5 => {
+                let x = self.oam2_peek();
+                self.load_sprite_counter(i, x);
+            }
             4 => {
-                self.sprite_counter[i] = self.oam2_peek();
+                let x = self.oam2_peek();
+                self.load_sprite_counter(i, x);
                 self.sprite_addr[i] = self.sprite_pattern_addr(i);
                 let addr = self.sprite_addr[i];
                 let mut lo = self.read_vram(addr, mapper);
@@ -356,7 +415,8 @@ impl Ppu {
                 self.note_sprite_pattern(i);
             }
             6 => {
-                self.sprite_counter[i] = self.oam2_peek();
+                let x = self.oam2_peek();
+                self.load_sprite_counter(i, x);
                 let addr = self.sprite_addr[i] + 8;
                 let mut hi = self.read_vram(addr, mapper);
                 if self.sprite_attr[i] & 0x40 != 0 {
@@ -365,7 +425,10 @@ impl Ppu {
                 self.sprite_hi[i] = if self.sprite_in_range(i) { hi } else { 0 };
                 self.note_sprite_pattern(i);
             }
-            7 => self.sprite_counter[i] = self.oam2_read(),
+            7 => {
+                let x = self.oam2_read();
+                self.load_sprite_counter(i, x);
+            }
             _ => {}
         }
     }

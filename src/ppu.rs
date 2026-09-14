@@ -19,6 +19,10 @@ pub const FRAME_HEIGHT: usize = 240;
 
 const DOTS_PER_SCANLINE: u16 = 341;
 
+/// Stands in `sprite_soonest` for "not worked out yet". No real position can
+/// reach it, so a dot that meets it knows to go and look.
+const SPRITE_UNKNOWN: u16 = u16::MAX;
+
 /// The 2C02's 64-entry palette as sRGB.
 ///
 /// The console emits composite, so any RGB table is an interpretation and
@@ -149,10 +153,21 @@ pub struct Ppu {
     eval_m: usize,
     eval_done: bool,
     /// Each drawn sprite's shifter counter, loaded with its X position as the
-    /// fetch reads it. It counts down a dot at a time, and the sprite is drawn
-    /// once it has run out — so a sprite has no position of its own, only a
-    /// distance still to go.
+    /// fetch reads it. The hardware counts it down a dot at a time and draws
+    /// the sprite once it has run out; this holds the position it was loaded
+    /// with and counts the dots in `sprite_elapsed` instead, which comes to
+    /// the same thing and costs a great deal less.
     sprite_counter: [u8; 8],
+    /// How many dots have been counted since the last of those positions was
+    /// loaded. The counters are not stepped one at a time any more: they all
+    /// count together, so one number serves all eight, and a sprite is due
+    /// once this reaches its position.
+    sprite_elapsed: u16,
+    /// The nearest position among the sprites still on their way, so that a
+    /// dot where none of them arrives costs one comparison. Set to
+    /// `SPRITE_UNKNOWN` when the positions or the waiting set have changed and
+    /// it has to be worked out again.
+    sprite_soonest: u16,
     /// Whether each counter is counting rather than halted. A halted sprite is
     /// one being drawn; the end of a line sets them all counting again, but
     /// only if rendering is on to do it.
@@ -316,6 +331,8 @@ impl Ppu {
             eval_m: 0,
             eval_done: true,
             sprite_counter: [0; 8],
+            sprite_elapsed: 0,
+            sprite_soonest: SPRITE_UNKNOWN,
             sprite_counting: 0xff,
             sprite_live: 0,
             sprite_y: [0; 8],

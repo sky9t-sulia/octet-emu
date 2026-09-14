@@ -59,95 +59,107 @@ impl Ppu {
             // away mid-line.
             self.corrupt_oam();
 
-            // Secondary OAM is cleared a byte every two dots, over the first
-            // sixty-four of a visible line. The pre-render line does not do it,
-            // which is what leaves last frame's sprites to be drawn on line 0.
-            if visible && self.dot >= 1 && self.dot <= 64 {
-                self.clear_secondary_oam();
-            }
+            // A line is a fixed sequence of stages, and a dot belongs to
+            // exactly one of them. Asking which one in a single jump beats
+            // walking a list of ranges, most of which any given dot fails.
+            match self.dot {
+                // Idle. The sprite unit sits reading secondary OAM at
+                // wherever its address came to rest.
+                0 => self.oam_buffer = self.peek_secondary_oam(),
 
-            // The secondary OAM address goes back to the start of its memory
-            // three times a line: at the end of the clear, the end of
-            // evaluation, and the end of the line. Whatever pinned it is let
-            // go at the same moments. Rendering has to be on as each goes
-            // by, which is how the address can still be frozen, or left part
-            // way along, when the next stage starts reading.
-            if matches!(self.dot, 63 | 255 | 339) {
-                self.oam2_full = false;
-            }
-            // The address itself goes back to the start of secondary OAM as
-            // each stage -- hands over to the next — the last of which is the
-            // fetch, which therefore starts reading at the first sprite.
-            if matches!(self.dot, 63 | 257 | 339) {
-                self.oam2_addr = 0;
-            }
+                // Secondary OAM is cleared a byte every two dots, over the
+                // first sixty-four of a visible line. The pre-render line does
+                // not do it, which is what leaves last frame's sprites to be
+                // drawn on line 0.
+                1..=64 => {
+                    if visible {
+                        self.clear_secondary_oam();
+                    }
+                    // The clear ends here, and hands the memory to
+                    // evaluation: the address goes back to the start and
+                    // whatever pinned it is let go.
+                    if self.dot == 63 {
+                        self.oam2_full = false;
+                        self.oam2_addr = 0;
+                    }
+                    self.fetch_dot(mapper, visible, true);
+                }
 
-            if (self.dot >= 1 && self.dot <= 256) || (self.dot >= 321 && self.dot <= 336) {
-                if visible && self.dot <= 256 {
-                    self.render_pixel();
+                // The same fetch, with evaluation running alongside it.
+                65..=256 => {
+                    self.fetch_dot(mapper, visible, true);
+                    if self.dot == 255 {
+                        self.oam2_full = false;
+                    }
+                    if self.dot == 256 {
+                        self.increment_y();
+                    }
+                    // Evaluation only happens on visible lines. The pre-render
+                    // line neither clears secondary OAM nor looks at OAM at
+                    // all, so its fetch loads the shifters from whatever the
+                    // last visible line left behind — and those sprites are
+                    // drawn on scanline 0.
+                    if visible {
+                        if self.dot == 65 {
+                            self.start_sprite_evaluation();
+                        }
+                        // Two dots to a step: OAM is read on the odd one,
+                        // secondary OAM written on the even one.
+                        if self.dot % 2 == 1 {
+                            self.sprite_eval_read();
+                        } else {
+                            self.sprite_eval_write();
+                        }
+                    }
                 }
-                self.shift_background();
-                if self.dot <= 256 {
-                    self.shift_sprites();
+
+                // Evaluation hands over to the sprite fetch, which therefore
+                // starts reading at the first sprite.
+                257 => {
+                    self.oam2_addr = 0;
+                    self.copy_x();
+                    self.prepare_sprites();
+                    self.sprite_fetch(mapper);
+                    self.oam_addr = 0;
                 }
-                self.background_fetch(mapper);
-            } else if self.dot == 257 {
-                self.copy_x();
-            } else if self.dot == 337 || self.dot == 339 {
+
+                // The fetch itself. The vertical scroll is restored across a
+                // window inside it, repeatedly rather than just once.
+                258..=320 => {
+                    if pre_render && self.dot >= 280 && self.dot <= 304 {
+                        self.copy_y();
+                    }
+                    self.sprite_fetch(mapper);
+                    self.oam_addr = 0;
+                }
+
+                // The first two tiles of the next line, fetched ahead.
+                321..=336 => {
+                    self.fetch_dot(mapper, false, false);
+                    self.oam_buffer = self.peek_secondary_oam();
+                }
+
                 // Two redundant nametable fetches end the line. MMC5 counts
                 // them to work out where it is in the frame.
-                let addr = 0x2000 | (self.v & 0x0fff);
-                self.nt_latch = self.read_vram(addr, mapper);
-                // The second of them is also where every counter is told to
-                // count again. Rendering has to be on for that to happen: if
-                // it is not, a sprite that was being drawn stays that way, and
-                // is drawn again from wherever rendering resumes.
-                if self.dot == 339 {
-                    self.sprite_counting = 0xff;
-                    self.sprite_live = 0;
+                _ => {
+                    if self.dot == 339 {
+                        self.oam2_full = false;
+                        self.oam2_addr = 0;
+                    }
+                    if self.dot == 337 || self.dot == 339 {
+                        let addr = 0x2000 | (self.v & 0x0fff);
+                        self.nt_latch = self.read_vram(addr, mapper);
+                    }
+                    // The second of them is also where every counter is told
+                    // to count again. Rendering has to be on for that to
+                    // happen: if it is not, a sprite that was being drawn
+                    // stays that way, and is drawn again from wherever
+                    // rendering resumes.
+                    if self.dot == 339 {
+                        self.restart_sprite_counters();
+                    }
+                    self.oam_buffer = self.peek_secondary_oam();
                 }
-            }
-
-            if self.dot == 256 {
-                self.increment_y();
-            }
-            // The vertical scroll is restored repeatedly across this window,
-            // not just once.
-            if pre_render && self.dot >= 280 && self.dot <= 304 {
-                self.copy_y();
-            }
-
-            // Evaluation only happens on visible lines. The pre-render line
-            // neither clears secondary OAM nor looks at OAM at all, so its
-            // fetch loads the shifters from whatever the last visible line
-            // left behind — and those sprites are drawn on scanline 0.
-            if visible && (65..=256).contains(&self.dot) {
-                if self.dot == 65 {
-                    self.start_sprite_evaluation();
-                }
-                // Two dots to a step: OAM is read on the odd one, secondary
-                // OAM written on the even one.
-                if self.dot % 2 == 1 {
-                    self.sprite_eval_read();
-                } else {
-                    self.sprite_eval_write();
-                }
-            }
-            if self.dot == 257 {
-                self.prepare_sprites();
-            }
-            if self.dot >= 257 && self.dot <= 320 {
-                self.sprite_fetch(mapper);
-            }
-            // Between the fetch ending and the next line's clear, the unit
-            // sits reading secondary OAM at wherever its address came to rest.
-            if self.dot == 0 || self.dot >= 321 {
-                self.oam_buffer = self.secondary_oam[(self.oam2_addr & 0x1f) as usize];
-            }
-
-            // OAM address is cleared throughout sprite fetching.
-            if self.dot >= 257 && self.dot <= 320 {
-                self.oam_addr = 0;
             }
         } else if visible && self.dot >= 1 && self.dot <= 256 {
             // With rendering off the backdrop is still drawn — and if `v`
