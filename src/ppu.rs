@@ -255,6 +255,11 @@ pub struct Ppu {
     /// dots a frame they are empty.
     pending_any: bool,
     pending_write: Option<(u16, u8, u8)>,
+    /// A `$2007` read taken while rendering, and the dots left before the PPU
+    /// acts on it. The processor's access does not reach the fetch cadence
+    /// where it is made: it waits the same three dots the scroll counter
+    /// takes, then puts its address out, and the byte follows two dots later.
+    pending_fetch: Option<(u16, u8)>,
     /// A `$2007` access's step of the scroll counters, waiting the same way.
     pending_increment: Option<u8>,
     /// The byte the sprite unit has in hand. Everything it does passes through
@@ -375,6 +380,7 @@ impl Ppu {
             oam_corrupt_row: None,
             pending_any: false,
             pending_write: None,
+            pending_fetch: None,
             pending_increment: None,
             oam_buffer: 0xff,
             eval_overflow_pending: false,

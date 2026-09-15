@@ -88,8 +88,8 @@ impl Ppu {
                     // buffer ends up with is the one the renderer reads two
                     // dots from now, not one of this register's own.
                     let buffered = self.read_buffer;
-                    self.ale(addr);
-                    self.buffer_fill = 2;
+                    self.pending_fetch = Some((addr, ADDR_WRITE_DELAY));
+                    self.pending_any = true;
                     buffered
                 } else {
                     let buffered = self.read_buffer;
@@ -123,6 +123,20 @@ impl Ppu {
 
     /// Act on whatever the PPU has been holding on to.
     pub(super) fn apply_write(&mut self, mapper: &mut dyn Mapper) {
+        if let Some((addr, left)) = self.pending_fetch {
+            if left > 1 {
+                self.pending_fetch = Some((addr, left - 1));
+            } else {
+                self.pending_fetch = None;
+                // The renderer's own ALE on this dot lands after this one and
+                // takes the bus, which is what the hardware does too.
+                self.ale(addr);
+                // Two dots from here the byte arrives; the counter is read
+                // one dot before it reaches zero, so three.
+                self.buffer_fill = 3;
+            }
+        }
+
         if let Some(left) = self.pending_increment {
             if left > 1 {
                 self.pending_increment = Some(left - 1);
@@ -135,7 +149,7 @@ impl Ppu {
         }
 
         let Some((addr, val, left)) = self.pending_write else {
-            self.pending_any = self.pending_increment.is_some();
+            self.pending_any = self.pending_increment.is_some() || self.pending_fetch.is_some();
             return;
         };
         if left > 1 {
@@ -143,7 +157,7 @@ impl Ppu {
             return;
         }
         self.pending_write = None;
-        self.pending_any = self.pending_increment.is_some();
+        self.pending_any = self.pending_increment.is_some() || self.pending_fetch.is_some();
         self.apply_register_write(addr, val, mapper);
     }
 
@@ -264,7 +278,11 @@ impl Ppu {
     /// See [`Ppu::ale_latch`] for why the two halves part company.
     pub(super) fn ale(&mut self, addr: u16) {
         let addr = addr & 0x3fff;
-        self.ale_latch = addr as u8;
+        // The low eight address lines are the data lines. An ALE that falls
+        // on the dot a read completes on therefore latches whatever the data
+        // lines are carrying, not the address being driven -- the latch and
+        // the bus feed each other, and the bus wins.
+        self.ale_latch = if self.buffer_fill == 1 { self.bus_data } else { addr as u8 };
         self.bus_addr = addr;
     }
 
