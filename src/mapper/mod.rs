@@ -31,8 +31,10 @@ mod taito;
 mod unrom180;
 mod uxrom;
 mod vrc1;
+mod vrc6;
 mod vrc3;
 mod vrc2_4;
+mod vrc_irq;
 
 pub use banks::Banks;
 
@@ -167,6 +169,7 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
             let sub = cart.submapper;
             Ok(Box::new(bandai::Bandai::new(cart, sub)))
         }
+        24 | 26 => Ok(Box::new(vrc6::Vrc6::new(cart, id))),
         21 | 22 | 23 | 25 | 27 | 183 => {
             let sub = cart.submapper;
             Ok(Box::new(vrc2_4::Vrc2_4::new(cart, id, sub)))
