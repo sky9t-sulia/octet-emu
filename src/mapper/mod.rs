@@ -32,6 +32,7 @@ mod unrom180;
 mod uxrom;
 mod vrc1;
 mod vrc6;
+mod vrc7;
 mod vrc3;
 mod vrc2_4;
 mod vrc_irq;
@@ -173,6 +174,10 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
         21 | 22 | 23 | 25 | 27 | 183 => {
             let sub = cart.submapper;
             Ok(Box::new(vrc2_4::Vrc2_4::new(cart, id, sub)))
+        }
+        85 => {
+            let sub = cart.submapper;
+            Ok(Box::new(vrc7::Vrc7::new(cart, sub)))
         }
         28 => Ok(Box::new(action53::Action53::new(cart))),
         33 | 48 => Ok(Box::new(taito::Taito::new(cart, id))),
