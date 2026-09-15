@@ -233,7 +233,7 @@ impl Ppu {
         // is taken as late as a `$2006` 'writes' is, so the fetch the access
         // lands on still runs off the address it had.
         if self.mask_rendering() && self.scanline < 240 {
-            self.pending_increment = Some(ADDR_WRITE_DELAY);
+            self.pending_increment = Some(INCREMENT_DELAY);
             self.pending_any = true;
             return;
         } else {

@@ -119,9 +119,12 @@ impl Ppu {
                 // starts reading at the first sprite.
                 257 => {
                     self.oam2_addr = 0;
-                    self.copy_x();
                     self.prepare_sprites();
+                    // The dummy nametable read this dot goes out on the
+                    // address the line was left with, not the one the scroll
+                    // is about to be reset to -- the reset lands after it.
                     self.sprite_fetch(mapper);
+                    self.copy_x();
                     self.oam_addr = 0;
                 }
 

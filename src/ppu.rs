@@ -27,6 +27,10 @@ const SPRITE_UNKNOWN: u16 = u16::MAX;
 /// machine starts as `M2` falls; one dot later the address goes out.
 pub(super) const FETCH_DELAY: u8 = 3;
 
+/// Dots before a `$2007` access taken while rendering steps the scroll
+/// counters. The fetch the access lands on still runs off the address it had.
+pub(super) const INCREMENT_DELAY: u8 = 5;
+
 /// The 2C02's 64-entry palette as sRGB.
 ///
 /// The console emits composite, so any RGB table is an interpretation and
