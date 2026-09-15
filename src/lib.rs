@@ -409,6 +409,10 @@ enum Oam {
 #[cfg_attr(feature = "snapshot", derive(serde::Serialize, serde::Deserialize))]
 enum Dmc {
     Idle,
+    /// A request that will find nothing to fetch. It costs the processor one
+    /// cycle, and unlike a fetch it is given up rather than delayed when the
+    /// cycle it wants is a write.
+    Snatch,
     /// Waiting to take the bus off the processor.
     Asked,
     /// The halt is spent; the dummy cycle is next.
@@ -494,6 +498,8 @@ impl Bus {
         // `dma_step` for who gets to move something on them.
         if self.apu.take_dmc_request() {
             self.dmc = Dmc::Asked;
+        } else if self.apu.take_dmc_snatch() && self.dmc == Dmc::Idle {
+            self.dmc = Dmc::Snatch;
         }
         // Disabling the channel gives up a fetch that is still taking the
         // bus. One that has not spent a cycle yet simply never does; one that
@@ -581,7 +587,9 @@ impl Bus {
                 self.oam = Oam::Asked;
             }
             0x4016 => self.strobe_pending = Some(val),
-            0x4000..=0x4017 => self.apu.write_register(addr, val),
+            0x4000..=0x4017 => {
+                self.apu.write_register(addr, val)
+            }
             0x4018..=0x401f => {}
             _ => {
                 self.mapper.cpu_write(addr, val);
@@ -652,6 +660,11 @@ impl CpuBus for Bus {
     }
 
     fn write(&mut self, addr: u16, val: u8) {
+        // The processor does not give up a write for one stolen cycle, and
+        // that request has nowhere to wait, so it is given up instead.
+        if self.dmc == Dmc::Snatch {
+            self.dmc = Dmc::Idle;
+        }
         self.tick_before();
         self.write_raw(addr, val);
         self.tick_after();
@@ -684,6 +697,11 @@ impl CpuBus for Bus {
         // the same time, and neither moves anything on its own: all a halt or
         // a dummy has to achieve is that the processor is off the bus by the
         // end of it. The fetch spends two, the sprite transfer one.
+        // A request with nothing behind it takes its one cycle and is done.
+        if self.dmc == Dmc::Snatch {
+            self.dmc = Dmc::Idle;
+            return;
+        }
         let dmc_taking = matches!(self.dmc, Dmc::Asked | Dmc::Dummy);
         let oam_taking = self.oam == Oam::Asked;
         if dmc_taking {

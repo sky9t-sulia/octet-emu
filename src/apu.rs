@@ -44,6 +44,15 @@ const NOISE_PERIOD_NTSC: [u16; 16] =
 const NOISE_PERIOD_PAL: [u16; 16] =
     [4, 8, 14, 30, 60, 88, 118, 148, 188, 236, 354, 472, 708, 944, 1890, 3778];
 
+/// How close behind a fetch a reload has to fall to cost a single cycle
+/// rather than nothing at all.
+///
+/// Two, which is the figure the test ROM gives for how near a fetch another
+/// one cannot happen. Measured here too: across the whole of that test the
+/// buffer runs dry two, four or six cycles behind a fetch, and only the twos
+/// are where the answer key expects a cycle to go missing.
+const SNATCH_GAP: u16 = 2;
+
 const DMC_PERIOD_NTSC: [u16; 16] =
     [428, 380, 340, 320, 286, 254, 226, 214, 190, 160, 142, 128, 106, 84, 72, 54];
 const DMC_PERIOD_PAL: [u16; 16] =
@@ -387,6 +396,16 @@ struct Dmc {
     /// arrives mid-fetch does not wait for it: the cycles it has already
     /// taken off the processor are gone, but the read never happens.
     drops_transfer: bool,
+
+    /// Set when the buffer empties close behind the fetch that filled it and
+    /// there is no byte left to ask for.
+    ///
+    /// The channel takes the bus before it knows there is nothing to fetch,
+    /// so the processor loses a cycle to a request that reads nothing. One
+    /// cycle, not the four a fetch costs.
+    wants_snatch: bool,
+    /// Cycles since the last fetch handed a byte over.
+    since_fetch: u16,
 }
 
 impl Default for Dmc {
@@ -413,6 +432,8 @@ impl Default for Dmc {
             disable_delay: 0,
             wants_transfer: false,
             drops_transfer: false,
+            wants_snatch: false,
+            since_fetch: u16::MAX,
         }
     }
 }
@@ -432,6 +453,7 @@ impl Dmc {
 
     /// Housekeeping that runs every CPU cycle, independent of the timer.
     fn process_clock(&mut self) {
+        self.since_fetch = self.since_fetch.saturating_add(1);
         if self.disable_delay > 0 {
             self.disable_delay -= 1;
             if self.disable_delay == 0 {
@@ -485,6 +507,11 @@ impl Dmc {
                 // Refill as soon as the buffer empties, unless the channel was
                 // only just enabled and the delay above owns the first fetch.
                 if self.transfer_start_delay == 0 {
+                    // A reload asked for this close behind a load finds
+                    // nothing to fetch, and costs a single cycle.
+                    if self.bytes_remaining == 0 && self.since_fetch <= SNATCH_GAP {
+                        self.wants_snatch = true;
+                    }
                     self.start_transfer();
                 }
             }
@@ -498,6 +525,7 @@ impl Dmc {
         }
         self.read_buffer = val;
         self.buffer_empty = false;
+        self.since_fetch = 0;
         self.current_addr = self.current_addr.wrapping_add(1);
         if self.current_addr == 0 {
             self.current_addr = 0x8000;
@@ -981,6 +1009,12 @@ impl Apu {
     /// disabled while it was under way.
     pub(crate) fn take_dmc_abort(&mut self) -> bool {
         core::mem::take(&mut self.dmc.drops_transfer)
+    }
+
+    /// True once, when the channel has taken the bus for a byte that is not
+    /// there. See [`Dmc::wants_snatch`].
+    pub(crate) fn take_dmc_snatch(&mut self) -> bool {
+        core::mem::take(&mut self.dmc.wants_snatch)
     }
 
 
