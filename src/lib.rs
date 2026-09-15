@@ -587,9 +587,7 @@ impl Bus {
                 self.oam = Oam::Asked;
             }
             0x4016 => self.strobe_pending = Some(val),
-            0x4000..=0x4017 => {
-                self.apu.write_register(addr, val)
-            }
+            0x4000..=0x4017 => self.apu.write_register(addr, val),
             0x4018..=0x401f => {}
             _ => {
                 self.mapper.cpu_write(addr, val);
