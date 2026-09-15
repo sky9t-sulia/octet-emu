@@ -32,11 +32,12 @@ Mappers: 0 (NROM), 1 (MMC1), 2 (UxROM), 3 (CNROM), 4 (MMC3, with 118 and 119),
 5 (MMC5), 7 (AxROM), 9/10 (MMC2 and MMC4), 11 (Color Dreams),
 16/159 (Bandai FCG, without its save EEPROM),
 19 (Namco 163, without its wavetable voices),
-21/22/23/25/27/183 (VRC2 and VRC4), 24/26 (VRC6, without its three voices), 28 (Action 53), 33/48 (Taito TC0190 and
-TC0690), 34 (BNROM), 64 (RAMBO-1), 65 (Irem H3001), 66 (GxROM), 67/68
-(Sunsoft-3 and Sunsoft-4), 69 (FME-7), 71 (Camerica and Codemasters),
-73 (VRC3), 75 (VRC1), 88/95/154/206 (Namco 108 and its boards),
-180 (UNROM 180), 232 (Camerica Quattro).
+21/22/23/25/27/183 (VRC2 and VRC4), 24/26 (VRC6, without its three voices),
+28 (Action 53), 33/48 (Taito TC0190 and TC0690), 34 (BNROM), 64 (RAMBO-1),
+65 (Irem H3001), 66 (GxROM), 67/68 (Sunsoft-3 and Sunsoft-4), 69 (FME-7),
+71 (Camerica and Codemasters), 73 (VRC3), 75 (VRC1),
+88/95/154/206 (Namco 108 and its boards), 180 (UNROM 180),
+232 (Camerica Quattro).
 
 Anything else is refused by name rather than played wrong.
 
