@@ -22,6 +22,7 @@ mod mmc1;
 mod mmc2;
 mod mmc3;
 mod mmc5;
+mod namco163;
 mod nrom;
 mod rambo1;
 mod sunsoft3;
@@ -161,6 +162,7 @@ pub fn create(cart: Cartridge) -> Result<Box<dyn Mapper>, UnsupportedMapper> {
         9 | 10 => Ok(Box::new(mmc2::Mmc2::new(cart, id))),
         7 => Ok(Box::new(axrom::AxRom::new(cart))),
         11 => Ok(Box::new(colordreams::ColorDreams::new(cart))),
+        19 => Ok(Box::new(namco163::Namco163::new(cart))),
         16 | 159 => {
             let sub = cart.submapper;
             Ok(Box::new(bandai::Bandai::new(cart, sub)))
