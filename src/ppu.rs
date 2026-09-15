@@ -23,6 +23,10 @@ const DOTS_PER_SCANLINE: u16 = 341;
 /// reach it, so a dot that meets it knows to go and look.
 const SPRITE_UNKNOWN: u16 = u16::MAX;
 
+/// Dots between a `$2007` read ending and the PPU acting on it. The state
+/// machine starts as `M2` falls; one dot later the address goes out.
+pub(super) const FETCH_DELAY: u8 = 3;
+
 /// The 2C02's 64-entry palette as sRGB.
 ///
 /// The console emits composite, so any RGB table is an interpretation and

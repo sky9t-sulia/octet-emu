@@ -88,7 +88,7 @@ impl Ppu {
                     // buffer ends up with is the one the renderer reads two
                     // dots from now, not one of this register's own.
                     let buffered = self.read_buffer;
-                    self.pending_fetch = Some((addr, ADDR_WRITE_DELAY));
+                    self.pending_fetch = Some((addr, FETCH_DELAY));
                     self.pending_any = true;
                     buffered
                 } else {
